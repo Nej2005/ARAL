@@ -132,30 +132,40 @@ def build_exam(db: Session, exam: Exam, rng: random.Random | None = None) -> Non
     result = run_batches(needs_llm, by_id, docs, lesson_terms, label) if needs_llm else GenerationBatch()
     _apply_batch(drafts, result, by_id, docs, index, other_statements, rng)
 
-    # One rebuild round for failed questions, using spare unused items (§8.5 step 5).
-    failed = [d for d in drafts if d.failed]
-    for d in failed:
-        log.info("question failed fidelity (%s): type=%s term=%r", d.failed, d.type, (d.item.term or "")[:50])
-    left = llm.remaining_seconds()
-    if failed and spare and (left is None or left > 100):  # the rebuild round needs another Gemini call
-        log.info("rebuilding %d failed questions with spare items", len(failed))
+    # Rebuild failed questions with spare unused items (§8.5 step 5). Up to three rounds, since a
+    # replacement can fail the no-hint checks too. With little time left in this step, the rebuild
+    # runs without Gemini: multiple-choice options are already computed, and the explanation falls
+    # back to the lesson's own sentence.
+    for round_no in range(3):
+        failed = [d for d in drafts if d.failed]
+        for d in failed:
+            log.info("question failed checks (%s): type=%s term=%r", d.failed, d.type, (d.item.term or "")[:50])
+        drafts = [d for d in drafts if not d.failed]
+        if not failed or not spare:
+            break
+        kept = [d.item for d in drafts]
         rng.shuffle(spare)
         replacements: list[tuple[str, SourceItem]] = []
         for d in failed:
-            cand = next((s for s in spare if d.type != "identification" or s.kind == "definition"), None)
+            taken = kept + [r for _, r in replacements]
+            cand = next((x for x in spare if (d.type != "identification" or x.kind == "definition")
+                         and not any(same_meaning(x, k) for k in taken)), None)
             if cand is None:
                 continue
             spare.remove(cand)
             replacements.append((d.type, cand))
-        if replacements:
-            redo = _make_drafts(replacements, docs, all_items, rng, start_ref=len(drafts))
-            res2 = run_batches(redo, by_id, docs, lesson_terms, label + " redo")
-            _apply_batch(redo, res2, by_id, docs, index, other_statements, rng)
-            drafts = [d for d in drafts if not d.failed] + [d for d in redo if not d.failed]
+        if not replacements:
+            break
+        redo = _make_drafts(replacements, docs, all_items, rng, start_ref=1000 * (round_no + 1))
+        left = llm.remaining_seconds()
+        if left is None or left > 100:
+            res2 = run_batches(redo, by_id, docs, lesson_terms, f"{label} redo{round_no + 1}")
         else:
-            drafts = [d for d in drafts if not d.failed]
-    else:
-        drafts = [d for d in drafts if not d.failed]
+            log.info("rebuilding %d questions without Gemini (%.0fs left in this step)", len(redo), left)
+            res2 = GenerationBatch()
+        _apply_batch(redo, res2, by_id, docs, index, other_statements, rng)
+        drafts += redo
+    drafts = [d for d in drafts if not d.failed]
 
     # Printable order: grouped by type (MCQ, T/F, Identification), as on a school exam.
     drafts.sort(key=lambda d: TYPE_ORDER[d.type])

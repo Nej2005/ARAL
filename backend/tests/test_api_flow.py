@@ -500,3 +500,27 @@ def test_markdown_term_list_imports_without_gemini(client, tmp_path, fake_llm):
     fb = client.post(f"{API}/attempts/{a['attempt_id']}/answer",
                      json={"question_id": a["card"]["question"]["id"], "response": "x"}).json()["feedback"]
     assert fb["source"]["location"].startswith("section ")
+
+
+def test_rebuild_without_gemini_when_time_is_short(client, fixture_files, fake_llm, monkeypatch):
+    """Rejected questions are replaced even when there is no time for another Gemini call."""
+    from app.services import llm as llm_mod
+    from app.services.generation import exam_builder
+
+    r, *_ = _ready_reviewer(client, fixture_files)
+    real = exam_builder._apply_batch
+    calls = {"n": 0}
+
+    def flaky_apply(drafts, *a, **k):
+        real(drafts, *a, **k)
+        calls["n"] += 1
+        if calls["n"] == 1:  # first round: pretend two questions failed the checks
+            for d in drafts[:2]:
+                d.failed = "forced"
+
+    monkeypatch.setattr(exam_builder, "_apply_batch", flaky_apply)
+    monkeypatch.setattr(llm_mod, "remaining_seconds", lambda: 30.0)  # too little for another Gemini call
+    n_before = sum(1 for c in fake_llm.calls if c[0] == "GenerationBatch")
+    e = make_exam(client, r["id"], {"types": ["mcq"], "count": 6})
+    assert e["status"] == "ready" and e["actual_count"] == 6 and e["shortfall"] == 0
+    assert sum(1 for c in fake_llm.calls if c[0] == "GenerationBatch") == n_before + 1  # no extra Gemini call
