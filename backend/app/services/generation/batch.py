@@ -51,10 +51,14 @@ BATCH_RULES = """You help build an exam reviewer from lesson material. You recei
 Return a JSON object with these lists:
 
 1. distractor_picks: for every entry in "mcq", choose EXACTLY 3 candidate ids that make the most plausible wrong
-   options: same topic, same kind of thing (a term for a term, a definition for a definition), similar length.
-   Use only ids from that question's "candidates". Never pick the correct item.
+   options: same topic, same kind of thing (a term for a term, a definition for a definition), similar length
+   and wording style to the correct option. Use only ids from that question's "candidates".
+   NEVER pick a candidate that is also a correct answer for the stem: a synonym, an abbreviation or expansion
+   of the answer, a broader or narrower name for the same thing, or a statement that is also true for it.
+   Never pick a candidate that the stem itself names or rules out.
 2. generated_distractors: ONLY for "mcq" entries whose "needs_generated" > 0, write that many plausible wrong options
-   in the style of the correct option, plus one short sentence each on why it is wrong.
+   in the style and length of the correct option, plus one short sentence each on why it is wrong. They must be
+   clearly wrong for the stem, must not contain the answer or its synonyms, and must not be named in the stem.
 3. falsifications: for every entry in "false_statements", change the statement so it becomes FALSE by replacing ONE
    span. "original_span" must be copied exactly from the statement (a key term, a number, a place, a relationship word).
    "replacement" should preferably be another term from this lesson (see "lesson_terms"), a changed number, or a
@@ -76,14 +80,9 @@ def build_payload(drafts: list[Draft], by_id: dict[str, SourceItem], docs: dict[
         entry = {"question_ref": d.ref, "type": d.type, "source_text": clean_for_display(it.source_quote),
                  "term": it.term}
         if d.type == "mcq" and not d.failed:
-            if d.mcq_format == "fill_in":
-                corr = {"text": it.term, "kind": "term"}
-                cands = [{"id": cid, "text": by_id[cid].term, "topic": by_id[cid].topic}
-                         for cid in d.candidate_ids if cid in by_id]
-            else:
-                corr = {"text": clean_for_display(it.body), "kind": "definition"}
-                cands = [{"id": cid, "text": clean_for_display(by_id[cid].body), "topic": by_id[cid].topic}
-                         for cid in d.candidate_ids if cid in by_id]
+            corr = {"text": d.choices[0]["text"], "kind": "term" if d.mcq_format == "fill_in" else "definition"}
+            cands = [{"id": cid, "text": d.candidate_texts[cid], "topic": by_id[cid].topic}
+                     for cid in d.candidate_ids if cid in by_id and cid in d.candidate_texts]
             mcq.append({"question_ref": d.ref, "stem": d.prompt, "correct": corr, "topic": it.topic,
                         "candidates": cands, "needs_generated": d.needs_generated})
             entry["correct_answer"] = corr["text"]

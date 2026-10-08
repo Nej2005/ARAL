@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.api import get_document, get_reviewer
 from app.db import get_db
 from app.errors import AppError
-from app.models import Document, DocumentPage, Reviewer, ReviewerDocument, SourceItem
+from app.models import Document, DocumentPage, Exam, Question, Reviewer, ReviewerDocument, SourceItem
 from app.schemas import AddDocument, AvailabilityRequest, CreateReviewer, ExportRequest, PatchReviewer
 from app.services.attempts import exam_scores
 from app.services.coverage import active_items, doc_item_counts, used_item_ids
@@ -78,6 +78,8 @@ def reviewer_detail(db: Session, r: Reviewer) -> dict:
             "steps_total": (window_count(d) + 1) if d.page_count else None,
             "item_count": counts.get(d.id, {}).get("items", 0),
             "used_items": counts.get(d.id, {}).get("used", 0),
+            "exam_count": len(exams_using_document(db, d.id, r.id)),
+            "shared": len(d.reviewer_links) > 1,
         }
         for d in r.documents
     ]
@@ -148,17 +150,45 @@ def add_document(reviewer_id: str, body: AddDocument, db: Session = Depends(get_
 
 
 @router.delete("/{reviewer_id}/documents/{document_id}")
-def remove_document(reviewer_id: str, document_id: str, db: Session = Depends(get_db)):
+def remove_document(reviewer_id: str, document_id: str, delete_file: bool = False, db: Session = Depends(get_db)):
+    """Remove a file from the reviewer.
+
+    With `delete_file=true` and no other reviewer using it, the file itself is deleted too, along with
+    the exams that have questions from it (their questions would otherwise point at nothing).
+    """
     r = get_reviewer(db, reviewer_id)
     link = next((l for l in r.links if l.document_id == document_id), None)
     if link is None:
         raise AppError(404, "NOT_FOUND", "That file is not part of this reviewer.")
     if len(r.links) == 1:
         raise AppError(409, "EMPTY_REVIEWER", "A reviewer needs at least one file. Delete the reviewer instead.")
-    db.delete(link)
+    doc = link.document
+    other_users = [l for l in doc.reviewer_links if l.reviewer_id != r.id]
+    deleted_exams = 0
+    deleted_file = False
+    if delete_file and not other_users:
+        for exam_id in exams_using_document(db, doc.id):
+            exam = db.get(Exam, exam_id)
+            if exam is not None:
+                db.delete(exam)
+                deleted_exams += 1
+        db.flush()
+        db.delete(doc)  # pages, items and the reviewer link go with it
+        deleted_file = True
+    else:
+        db.delete(link)
     db.commit()
     db.refresh(r)
-    return reviewer_detail(db, r)
+    return {**reviewer_detail(db, r), "deleted_file": deleted_file, "deleted_exams": deleted_exams}
+
+
+def exams_using_document(db: Session, document_id: str, reviewer_id: str | None = None) -> set[str]:
+    q = (db.query(Question.exam_id)
+         .join(SourceItem, SourceItem.id == Question.source_item_id)
+         .filter(SourceItem.document_id == document_id))
+    if reviewer_id:
+        q = q.join(Exam, Exam.id == Question.exam_id).filter(Exam.reviewer_id == reviewer_id)
+    return {row[0] for row in q.distinct()}
 
 
 def _topics(items: list[SourceItem], used: set[str]) -> list[dict]:

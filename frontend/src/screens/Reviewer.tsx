@@ -4,7 +4,7 @@ import { useNavigate, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
 import { keys, useReviewer, useReviewerExams } from "../api/hooks";
-import type { AttemptStart, DocumentSummary, Exam } from "../api/types";
+import type { AttemptStart, DocumentSummary, Exam, ReviewerDetail, ReviewerDoc } from "../api/types";
 import { uploadFile } from "../api/upload";
 import Header from "../components/Header";
 import Icon from "../components/Icon";
@@ -12,6 +12,7 @@ import MiniBar from "../components/MiniBar";
 import { docPending, driveDocument, useDriveDocuments } from "../lib/driver";
 import { describeError, shortDate, TYPE_SHORT } from "../lib/format";
 import { useToast } from "../lib/toast";
+import ConfirmSheet from "../sheets/ConfirmSheet";
 import ExportSheet from "../sheets/ExportSheet";
 import NewExam from "../sheets/NewExam";
 import ReviewerMenu from "../sheets/ReviewerMenu";
@@ -26,6 +27,8 @@ export default function Reviewer() {
   const rv = useReviewer(id);
   const exams = useReviewerExams(id);
   const [sheet, setSheet] = useState<SheetName>(null);
+  const [removing, setRemoving] = useState<ReviewerDoc | null>(null);
+  const [deleting, setDeleting] = useState<{ exam: Exam; n: number } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   useDriveDocuments(qc, rv.data?.documents);
@@ -49,11 +52,29 @@ export default function Reviewer() {
     onError: (e) => toast(describeError(e)),
   });
 
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: keys.reviewer(id) });
+    qc.invalidateQueries({ queryKey: keys.reviewerExams(id) });
+    qc.invalidateQueries({ queryKey: keys.reviewers });
+  };
+
   const removeFile = useMutation({
-    mutationFn: (docId: string) => api.del(`/reviewers/${id}/documents/${docId}`),
+    mutationFn: (docId: string) =>
+      api.del<ReviewerDetail & { deleted_file: boolean; deleted_exams: number }>(`/reviewers/${id}/documents/${docId}?delete_file=true`),
+    onSuccess: (res) => {
+      setRemoving(null);
+      refresh();
+      toast(res.deleted_exams ? `File deleted · ${res.deleted_exams} exam${res.deleted_exams > 1 ? "s" : ""} removed` : res.deleted_file ? "File deleted" : "File removed");
+    },
+    onError: (e) => toast(describeError(e)),
+  });
+
+  const deleteExam = useMutation({
+    mutationFn: (examId: string) => api.del(`/exams/${examId}`),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.reviewer(id) });
-      qc.invalidateQueries({ queryKey: keys.reviewers });
+      setDeleting(null);
+      refresh();
+      toast("Exam deleted");
     },
     onError: (e) => toast(describeError(e)),
   });
@@ -166,7 +187,8 @@ export default function Reviewer() {
                         className="icon-btn"
                         aria-label={`Remove ${d.filename}`}
                         disabled={r.document_count <= 1 || removeFile.isPending}
-                        onClick={() => removeFile.mutate(d.id)}
+                        title={r.document_count <= 1 ? "A reviewer needs at least one file" : undefined}
+                        onClick={() => setRemoving(d)}
                       >
                         <Icon name="x" />
                       </button>
@@ -183,16 +205,21 @@ export default function Reviewer() {
                       const n = exams.data.length - i;
                       const score = e.best_score ?? e.latest_score;
                       return (
-                        <button key={e.id} className="lr r-exam" onClick={() => openExam.mutate(e)} disabled={openExam.isPending}>
-                          <span className="t">
-                            Set {n} <span className="sub">· {e.types.map((t) => TYPE_SHORT[t]).join(" · ")}</span>
-                          </span>
-                          <span className="score-pill">
-                            {e.status === "generating" ? "…" : e.status === "failed" ? "✗" : e.in_progress_attempt_id ? "▶" : score ? `${score.correct_count}/${score.total}` : "—"}
-                          </span>
-                          <span className="muted sub-cell">{shortDate(e.created_at)}</span>
-                          <Icon name="chev" />
-                        </button>
+                        <div key={e.id} className="lr r-exam-row">
+                          <button className="r-exam-main" onClick={() => openExam.mutate(e)} disabled={openExam.isPending}>
+                            <span className="t">
+                              Set {n} <span className="sub">· {e.types.map((t) => TYPE_SHORT[t]).join(" · ")}</span>
+                            </span>
+                            <span className="score-pill">
+                              {e.status === "generating" ? "…" : e.status === "failed" ? "✗" : e.in_progress_attempt_id ? "▶" : score ? `${score.correct_count}/${score.total}` : "—"}
+                            </span>
+                            <span className="muted sub-cell">{shortDate(e.created_at)}</span>
+                            <Icon name="chev" />
+                          </button>
+                          <button className="icon-btn" aria-label={`Delete set ${n}`} onClick={() => setDeleting({ exam: e, n })}>
+                            <Icon name="trash" />
+                          </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -205,6 +232,35 @@ export default function Reviewer() {
       {r && sheet === "start" && <NewExam reviewer={r} onClose={() => setSheet(null)} />}
       {r && sheet === "export" && <ExportSheet kind="reviewer" id={r.id} title={r.title} onClose={() => setSheet(null)} />}
       {r && sheet === "menu" && <ReviewerMenu reviewer={r} onClose={() => setSheet(null)} />}
+      {removing && (
+        <ConfirmSheet
+          title="Delete file?"
+          confirmLabel="Delete"
+          busy={removeFile.isPending}
+          onConfirm={() => removeFile.mutate(removing.id)}
+          onClose={() => setRemoving(null)}
+        >
+          <p className="confirm-name">{removing.filename}</p>
+          {removing.shared ? (
+            <p className="muted small">Also used by another reviewer, so it's only removed from this one.</p>
+          ) : removing.exam_count > 0 ? (
+            <p className="muted small">{removing.exam_count} exam{removing.exam_count > 1 ? "s" : ""} built from it will be deleted too.</p>
+          ) : null}
+        </ConfirmSheet>
+      )}
+      {deleting && (
+        <ConfirmSheet
+          title={`Delete set ${deleting.n}?`}
+          confirmLabel="Delete"
+          busy={deleteExam.isPending}
+          onConfirm={() => deleteExam.mutate(deleting.exam.id)}
+          onClose={() => setDeleting(null)}
+        >
+          <p className="muted small">
+            Its {deleting.exam.actual_count} questions and scores are deleted. Those items can appear in new sets again.
+          </p>
+        </ConfirmSheet>
+      )}
     </div>
   );
 }

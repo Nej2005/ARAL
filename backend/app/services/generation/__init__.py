@@ -26,6 +26,7 @@ class Draft:
     # mcq
     mcq_format: str | None = None  # "fill_in" | "term_meaning"
     candidate_ids: list[str] = field(default_factory=list)
+    candidate_texts: dict[str, str] = field(default_factory=dict)  # option text shown for each candidate
     needs_generated: int = 0
     failed: str | None = None
 

@@ -424,3 +424,61 @@ def test_exports(client, fixture_files):
     assert rows2 and all("file::sample-pdf" in r[2] for r in rows2)
     assert any(r[0] == "ATP" and r[1].startswith("the main energy-carrying molecule") for r in rows2)
     assert client.get(f"{API}/reviewers/{r['id']}").json()["used_items"] == 6  # exports don't count as reviewed
+
+
+# --------------------------------------------------------------------------- deleting
+
+
+def test_delete_exam_frees_its_items(client, fixture_files, session):
+    from app.models import Answer, Attempt, Exam, Question, utcnow
+
+    r, *_ = _ready_reviewer(client, fixture_files)
+    e = make_exam(client, r["id"], {"types": ["mcq", "identification"], "count": 4})
+    a = client.post(f"{API}/exams/{e['id']}/attempts").json()
+    q = a["card"]["question"]
+    client.post(f"{API}/attempts/{a['attempt_id']}/answer", json={"question_id": q["id"], "response": _wrong_answer(q)})
+    assert client.get(f"{API}/reviewers/{r['id']}").json()["used_items"] == 4
+
+    session.get(Exam, e["id"]).step_started_at = utcnow()  # being built right now -> refused
+    session.commit()
+    busy = client.delete(f"{API}/exams/{e['id']}")
+    assert busy.status_code == 409 and busy.json()["error"]["code"] == "ALREADY_PROCESSING"
+    session.get(Exam, e["id"]).step_started_at = None
+    session.commit()
+
+    assert client.delete(f"{API}/exams/{e['id']}").status_code == 204
+    assert client.get(f"{API}/exams/{e['id']}").status_code == 404
+    assert client.get(f"{API}/attempts/{a['attempt_id']}").status_code == 404
+    session.expire_all()
+    assert session.query(Question).count() == 0 and session.query(Attempt).count() == 0 and session.query(Answer).count() == 0
+    rv = client.get(f"{API}/reviewers/{r['id']}").json()
+    assert rv["used_items"] == 0 and rv["exam_count"] == 0  # its items count as new again
+    assert client.get(f"{API}/reviewers/{r['id']}/exams").json() == []
+    assert client.delete(f"{API}/exams/{e['id']}").status_code == 404
+
+
+def test_remove_file_with_delete_file(client, fixture_files):
+    r, d1, d2 = _ready_reviewer(client, fixture_files)
+    scope1 = {"documents": [{"document_id": d1["id"]}]}
+    e1 = make_exam(client, r["id"], {"types": ["mcq"], "count": 3, "scope": scope1})
+    e2 = make_exam(client, r["id"], {"types": ["mcq"], "count": 3, "scope": {"documents": [{"document_id": d2["id"]}]}})
+    docs = {d["id"]: d for d in client.get(f"{API}/reviewers/{r['id']}").json()["documents"]}
+    assert docs[d1["id"]]["exam_count"] == 1 and docs[d2["id"]]["exam_count"] == 1
+    assert docs[d1["id"]]["shared"] is False
+
+    # Plain remove keeps the file in the library and the exam working
+    other = client.post(f"{API}/reviewers", json={"title": "Other", "document_ids": [d1["id"]]}).json()
+    assert client.get(f"{API}/reviewers/{r['id']}").json()["documents"][0]["shared"] is True
+    out = client.delete(f"{API}/reviewers/{r['id']}/documents/{d1['id']}?delete_file=true").json()
+    assert out["deleted_file"] is False and out["deleted_exams"] == 0  # still used by "Other"
+    assert client.get(f"{API}/documents/{d1['id']}").status_code == 200
+    assert client.get(f"{API}/exams/{e1['id']}").status_code == 200
+
+    # Not shared any more: deleting removes the file and the exams built from it
+    client.post(f"{API}/reviewers/{r['id']}/documents", json={"document_id": d1["id"]})
+    client.delete(f"{API}/reviewers/{other['id']}")
+    out = client.delete(f"{API}/reviewers/{r['id']}/documents/{d1['id']}?delete_file=true").json()
+    assert out["deleted_file"] is True and out["deleted_exams"] == 1 and out["document_count"] == 1
+    assert client.get(f"{API}/documents/{d1['id']}").status_code == 404
+    assert client.get(f"{API}/exams/{e1['id']}").status_code == 404
+    assert client.get(f"{API}/exams/{e2['id']}").status_code == 200

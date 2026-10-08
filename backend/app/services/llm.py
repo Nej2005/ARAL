@@ -116,7 +116,9 @@ def _gemini_backend(system: str, user: str, schema: type[T], label: str) -> T:
     if settings.gemini_fallback_model:
         models.append(settings.gemini_fallback_model)
 
-    quota_hit = False
+    # One call may wait out rate limits and overload, but must finish well inside a 300 s request.
+    deadline = time.monotonic() + 230
+    quota_hit = server_busy = False
     for model in models:
         validation_retries = 1
         attempt = 0
@@ -127,25 +129,28 @@ def _gemini_backend(system: str, user: str, schema: type[T], label: str) -> T:
             except gerrors.APIError as e:
                 code = _status_code(e)
                 if code == 429:
-                    # Free-tier limits are per minute: wait out the window (about 100 s in total),
-                    # then move on to the fallback model. A processing step may take up to 300 s.
-                    if attempt <= 4:
-                        delay = 10 * attempt + random.uniform(0, 3)
+                    # Free-tier limits are per minute: wait out the window, then try the fallback model.
+                    delay = 10 * attempt + random.uniform(0, 3)
+                    if attempt <= 4 and time.monotonic() + delay < deadline:
                         log.warning("gemini 429 on %s (%s); retry in %.0fs", model, label, delay)
                         time.sleep(delay)
                         continue
                     quota_hit = True
-                    break  # try the fallback model
+                    break
                 if code is not None and code >= 500:
-                    if attempt <= 3:
-                        time.sleep(2 * attempt)
+                    # "Model overloaded" (503) usually passes within seconds; then try the fallback model.
+                    delay = 6 * attempt + random.uniform(0, 2)
+                    if attempt <= 3 and time.monotonic() + delay < deadline:
+                        log.warning("gemini %s on %s (%s); retry in %.0fs", code, model, label, delay)
+                        time.sleep(delay)
                         continue
-                    raise LLMError(f"Gemini server error {code}: {e}") from e
+                    server_busy = True
+                    break
                 raise LLMError(f"Gemini request failed ({code}): {e}") from e
             except LLMBlocked:
                 raise
             except (OSError, TimeoutError) as e:
-                if attempt <= 3:
+                if attempt <= 3 and time.monotonic() + 2 * attempt < deadline:
                     time.sleep(2 * attempt)
                     continue
                 raise LLMError(f"Could not reach Gemini: {e}") from e
@@ -157,6 +162,8 @@ def _gemini_backend(system: str, user: str, schema: type[T], label: str) -> T:
                     log.warning("gemini returned invalid JSON for %s; retrying once", label)
                     continue
                 raise LLMError(f"Gemini returned data that did not match the schema: {e}") from e
+    if server_busy:
+        raise LLMError("Gemini is overloaded right now. Try again in a few minutes.")
     if quota_hit:
         raise LLMQuotaExceeded("Gemini's free-tier limit was reached. Progress is saved; try again later.")
     raise LLMError("No Gemini model available.")

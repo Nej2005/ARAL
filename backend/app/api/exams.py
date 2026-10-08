@@ -90,6 +90,17 @@ def process_exam(exam_id: str, db: Session = Depends(get_db)):
     return {**exam_payload(e), **exam_scores(e), "done": e.status in ("ready", "failed")}
 
 
+@router.delete("/exams/{exam_id}", status_code=204)
+def delete_exam(exam_id: str, db: Session = Depends(get_db)):
+    """Delete an exam set with its questions, attempts and answers. Its items count as new again."""
+    e = get_exam(db, exam_id)
+    if jobs.is_busy(e):
+        raise AppError(409, "ALREADY_PROCESSING", "This exam is being built right now. Try again in a moment.")
+    db.delete(e)
+    db.commit()
+    return Response(status_code=204)
+
+
 @router.get("/exams/{exam_id}")
 def get_exam_status(exam_id: str, db: Session = Depends(get_db)):
     e = get_exam(db, exam_id)

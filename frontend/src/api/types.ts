@@ -57,6 +57,8 @@ export interface ReviewerDoc {
   page_unit: "page" | "slide";
   item_count: number;
   used_items: number;
+  exam_count: number;
+  shared: boolean;
 }
 
 export interface ReviewerDetail extends ReviewerSummary {

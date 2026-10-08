@@ -230,23 +230,130 @@ def blank_term(text: str, term: str) -> str | None:
     return text[: m.start()] + BLANK + text[m.end() :]
 
 
+def _case_sensitive(term: str) -> bool:
+    """Short capitalized names (Read, Change, Owner) are also everyday words: match only as the name.
+
+    Otherwise "Allows users to read files" would be masked for the term "Read".
+    """
+    t = normalize_ws(term)
+    return " " not in t and len(t) <= 6 and t[:1].isupper() and t[1:].islower()
+
+
+def _term_regex(term: str) -> re.Pattern:
+    """Whole-word, whitespace-insensitive match of a term, allowing a plural ending."""
+    tokens = normalize_ws(term).split(" ")
+    core = r"\s+".join(re.escape(t) for t in tokens)
+    flags = 0 if _case_sensitive(term) else re.IGNORECASE
+    return re.compile(r"(?<![\w])" + core + r"(?:e?s)?(?![\w])", flags)
+
+
+def mentions(text: str, terms) -> bool:
+    return any(t and len(t.strip()) >= 2 and _term_regex(t).search(text) for t in terms)
+
+
+_ARTICLE_BEFORE_BLANK = re.compile(r"\b([Aa])n?(\s+)" + re.escape(BLANK))
+_BLANK_RUN = re.compile(re.escape(BLANK) + r"(?:\s*[(/,]\s*" + re.escape(BLANK) + r"\s*\)?)+")
+
+
+def mask_terms(text: str, terms) -> str:
+    """Hide every mention of the answer (term, aliases, plurals) behind the blank.
+
+    Also folds "_____ (_____)" into one blank and turns "a/an _____" into "a(n) _____",
+    so neither a second mention nor the article gives the answer away.
+    """
+    out = text
+    for t in sorted({normalize_ws(t) for t in terms if t and len(normalize_ws(t)) >= 2}, key=len, reverse=True):
+        out = _term_regex(t).sub(BLANK, out)
+    out = _BLANK_RUN.sub(BLANK, out)
+    out = _ARTICLE_BEFORE_BLANK.sub(lambda m: m.group(1) + "(n)" + m.group(2) + BLANK, out)
+    return out
+
+
+_SEP = r"\s*(?:\([^)]{1,60}\)\s*)?(?:[–—:|]|-(?=\s))\s*"
+
+
+def strip_term_prefix(text: str, terms) -> str:
+    """'Read – Allows groups…' -> 'Allows groups…' (a definition shown without its own term)."""
+    for t in sorted({normalize_ws(t) for t in terms if t}, key=len, reverse=True):
+        tokens = t.split(" ")
+        m = re.match(r"^\s*" + r"\s+".join(re.escape(x) for x in tokens) + _SEP, text, re.IGNORECASE)
+        if m and len(text) - m.end() >= 3:
+            return text[m.end():].strip()
+    return text.strip()
+
+
+def capitalize_first(s: str) -> str:
+    return s[:1].upper() + s[1:] if s else s
+
+
+def visible_chars(s: str) -> int:
+    return len(re.sub(r"[\W_]", "", s.replace(BLANK, "")))
+
+
+def pieces_from_source(text_with_blanks: str, source_norm: str) -> bool:
+    """Every piece between blanks must be lesson text (case/space-insensitive)."""
+    for piece in text_with_blanks.replace("(n)", "").split(BLANK):
+        p = norm_cmp(piece).strip(" -–—:|,.;()\"'")
+        if len(p) >= 3 and p not in source_norm:
+            return False
+    return True
+
+
 def check_identification(prompt: str, body: str, term: str) -> bool:
-    if BLANK in prompt:
-        restored = prompt.replace(BLANK, term, 1)
-        return norm_cmp(restored) == norm_cmp(body) or norm_cmp(prompt) == norm_cmp(blank_term(body, term) or "")
-    return norm_cmp(prompt) == norm_cmp(body)
+    src = norm_cmp(clean_for_display(body)) + " \n " + norm_cmp(body)
+    return visible_chars(prompt) >= 8 and pieces_from_source(prompt, src) and not mentions(prompt, [term])
 
 
 def check_fill_in_stem(stem: str, source_quote: str, term: str) -> bool:
-    if stem.count(BLANK) != 1:
-        return False
-    return norm_cmp(stem.replace(BLANK, term, 1)) == norm_cmp(clean_for_display(source_quote)) or norm_cmp(
-        stem.replace(BLANK, term, 1)
-    ) == norm_cmp(source_quote)
+    src = norm_cmp(clean_for_display(source_quote)) + " \n " + norm_cmp(source_quote)
+    return BLANK in stem and visible_chars(stem) >= 8 and pieces_from_source(stem, src) and not mentions(stem, [term])
 
 
-def check_option_is_lesson_text(option: str, lesson_terms_and_bodies: set[str]) -> bool:
-    return norm_cmp(option) in lesson_terms_and_bodies
+def check_option_is_lesson_text(option: str, lesson_text_norm: str) -> bool:
+    return visible_chars(option) >= 1 and pieces_from_source(option, lesson_text_norm)
+
+
+def _close_form(s: str) -> str:
+    return " ".join(re.sub(r"[\-/]", " ", norm_cmp(s)).split())
+
+
+def _acronyms(s: str) -> set[str]:
+    return set(re.findall(r"\b[A-Z][A-Z0-9]{1,}\b", s))
+
+
+def _initials(s: str) -> str:
+    words = [w for w in re.split(r"[\s\-/]+", s) if w and w[0].isalpha()]
+    return "".join(w[0] for w in words).upper()
+
+
+def too_close(a: str, b: str) -> bool:
+    """Could `b` also be a right answer where `a` is? Same name, one inside the other, or an acronym pair."""
+    na, nb = _close_form(a), _close_form(b)
+    if not na or not nb or na == nb:
+        return True
+    short, long_ = (na, nb) if len(na) <= len(nb) else (nb, na)
+    if len(short.split()) >= 2 and f" {short} " in f" {long_} ":
+        return True
+    if fuzz.ratio(na, nb) >= 85:
+        return True
+    # Same words in another order ("quota user" / "user quota"); a one-word name inside a longer one
+    # ("Read" / "Read/Write") is a fair distractor, so require two words on both sides.
+    if min(len(na.split()), len(nb.split())) >= 2 and fuzz.token_set_ratio(na, nb) >= 90:
+        return True
+    ia, ib = _initials(a), _initials(b)
+    if (len(ib) >= 2 and ib in _acronyms(a)) or (len(ia) >= 2 and ia in _acronyms(b)):
+        return True
+    return False
+
+
+_FRAGMENT = re.compile(r"^(?:or|and|but|nor|so|then|which|that)\b", re.IGNORECASE)
+
+
+def poor_option(text: str, max_words: int = 6) -> bool:
+    """Numbers, sentence fragments and long phrases make weak or giveaway options."""
+    t = normalize_ws(text)
+    return (len(t) < 2 or bool(re.fullmatch(r"[\d\s.,%:/-]+", t)) or bool(_FRAGMENT.match(t))
+            or len(t.split(" ")) > max_words)
 
 
 def check_true_statement(prompt: str, source_quote: str, body: str) -> bool:

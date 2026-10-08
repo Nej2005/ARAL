@@ -398,6 +398,12 @@ Input: `reviewer_id`, `types` (1–3 types), `count`, optional `scope`.
 - `correct_answer` = `term`; `accepted_answers` = `[term, *aliases]`.
 
 ### 8.3 Multiple Choice — mostly deterministic
+
+**No giveaways** (`multiple_choice.py`, checked again after Gemini picks):
+- Every mention of the answer in the stem — the term, its aliases and plurals — is blanked, `_____ (_____)` folds into one blank, and "a/an _____" becomes "a(n) _____".
+- Definition options are shown without their own term ("Read – Allows…" → "Allows…"); any other mention of it is blanked. Options containing the asked term are never used, nor (when avoidable) options with a blank in them.
+- A distractor is never offered if it could also be right (`too_close`: same name, one multi-word name inside the other, acronym ↔ expansion such as DFS / Distributed File System), if the stem names it, or if it is a number, a sentence fragment or a long phrase (`poor_option`).
+- Every option starts with a capital letter, so case gives nothing away. Short capitalized names (Read, Change, Owner) are matched only as names, so the verb "read" is not blanked.
 There are two stem formats. One is chosen at random per question, for variety:
 
 | format | stem | correct option | distractors |
@@ -626,7 +632,7 @@ When `APP_PASSCODE` is set, every route except `/health` needs the header `X-Pas
 | `PATCH /reviewers/{id}` | `{ "title"?: "...", "document_order"?: ["d2","d1"] }` | `200 reviewer` |
 | `DELETE /reviewers/{id}` | — | `204` (deletes its exams and attempts; the documents stay in the library) |
 | `POST /reviewers/{id}/documents` | `{ "document_id": "d3" }` | `200 reviewer` |
-| `DELETE /reviewers/{id}/documents/{document_id}` | — | `200 reviewer`; `409 EMPTY_REVIEWER` if it is the last document |
+| `DELETE /reviewers/{id}/documents/{document_id}` | `?delete_file=true` optional | `200 reviewer + { deleted_file, deleted_exams }`. With `delete_file`, a file no other reviewer uses is deleted, together with the exams that have questions from it. `409 EMPTY_REVIEWER` if it is the last document. Each document in `GET /reviewers/{id}` has `exam_count` and `shared` so the UI can say what will be deleted |
 | `GET /reviewers/{id}/outline` | — | `200 { documents: [ { document_id, filename, page_count, pages: [ { page_no, title, item_count } ] } ], topics: [ { topic, topic_key, item_count, unused_count } ] }` |
 | `POST /reviewers/{id}/availability` | `{ "types": [...], "scope"?: {...} }` | `200 { total_items, used_items, unused_items, max_count_for_types, unused_by_type: { mcq, true_false, identification }, unused_outside_scope }` |
 | `POST /reviewers/{id}/coverage/reset` | — | `200 { coverage_epoch }` |
@@ -636,6 +642,7 @@ When `APP_PASSCODE` is set, every route except `/health` needs the header `X-Pas
 | Method & path | Body | Response |
 |---|---|---|
 | `POST /reviewers/{id}/exams` | `{ "types": ["mcq","true_false"], "count": 20, "scope"?: {...} }` | `202 { id, status: "generating" }`; `409 DOCUMENTS_NOT_READY`; `409 ALL_ITEMS_REVIEWED`; `422 INVALID_SCOPE` |
+| `DELETE /exams/{id}` | — | `204`. Deletes the set with its questions, attempts and answers; its items count as unused again. `409 ALREADY_PROCESSING` while it is being built |
 | `POST /exams/{id}/process` | — | Builds the questions (§8.5) and returns the exam with `done`. Call until `done` |
 | `GET /exams/{id}` | — | `200 { id, reviewer_id, status, types, scope, requested_count, actual_count, shortfall }`. No questions are included; they are served one card at a time through attempts. |
 | `GET /reviewers/{id}/exams` | — | list of the reviewer's exams with their best (full-attempt) and latest score |
