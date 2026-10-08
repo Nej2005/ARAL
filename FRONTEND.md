@@ -2,8 +2,7 @@
 
 The frontend for the app described in [BACKEND.md](BACKEND.md). It runs on **localhost**, works on **laptop and phone**, and has **light and dark mode**.
 
-- **Clickable prototype:** https://claude.ai/artifact/RnVe5VB5FUQcUr57JS48wM (private to you)
-- **Local copy:** [design/prototype.html](design/prototype.html). This is a visual reference only; the real app is built in React (§3).
+- **Prototype:** [design/prototype.html](design/prototype.html). This is a visual reference only; the real app is built in React (§3).
 
 ---
 
