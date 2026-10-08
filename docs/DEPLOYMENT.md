@@ -1,52 +1,62 @@
-# Deploying ARAL to Vercel (later)
+# Deploying ARAL to Vercel
 
-ARAL runs locally today. The repository is already **laid out for Vercel**: one project serves the React
-frontend as static files and the FastAPI backend as a Python serverless function on the same domain.
-A few backend changes are still needed before it works well there; they're listed below.
+One Vercel project serves the React frontend as static files and the FastAPI backend as a Python
+serverless function on the same domain. Data lives in a hosted PostgreSQL (free tier is enough).
 
-## What is already prepared
+## How it fits a serverless host
+
+| Concern | How ARAL handles it |
+|---|---|
+| No permanent disk | Uploaded files are stored in the database (table `document_files`) and deleted once their pages are read. No file storage service is needed. |
+| 4.5 MB request limit | The browser uploads files in 3 MB chunks (`POST /uploads` → `PUT /uploads/{id}/chunks/{n}` → `complete`). Duplicates are detected from the file's hash before any bytes are sent. |
+| No background jobs | Processing happens in steps: the open browser tab calls `POST /documents/{id}/process` (one Gemini window per call) and `POST /exams/{id}/process` until the status is `ready`. Progress is saved after every step; closing the tab just pauses. |
+| Public URL | `APP_PASSCODE` protects every API route; the app asks for it once per browser. |
+| SQLite is local-only | `DATABASE_URL` pointing at PostgreSQL. The migrations run automatically on the first request. |
+
+Local development is unchanged (SQLite, no passcode).
+
+## Files involved
 
 | File | Purpose |
 |---|---|
-| `vercel.json` | Builds `frontend/` into `frontend/dist`, routes `/api/*` to the Python function, and sends every other path to the React app |
+| `vercel.json` | Builds `frontend/` into `frontend/dist`, routes `/api/*` to the Python function, sends every other path to the React app, sets the function timeout |
 | `api/index.py` | Serverless entry point; imports the FastAPI app from `backend/` |
-| `requirements.txt` | Python packages for the function (adds the PostgreSQL driver) |
+| `requirements.txt` | Python packages for the function (includes the PostgreSQL driver) |
 | `.vercelignore` | Leaves out virtual envs, local data, tests and design files |
 | `frontend/.env.production` | Production builds call the API on the same domain (`/api/v1`) |
-| `backend/app/config.py` | On Vercel, local files and SQLite go to `/tmp`; `DATABASE_URL=postgres://…` is converted for SQLAlchemy automatically |
 
-Local development is unchanged: none of these files are used by `uvicorn` or `npm run dev`.
+## Deploy steps
 
-## Environment variables to set in Vercel
+### 1. Create a free PostgreSQL database
+1. Sign up at **neon.tech** (or supabase.com) and create a project.
+2. Copy the connection string. It looks like `postgresql://user:password@host/dbname?sslmode=require`.
+
+### 2. Create the Vercel project
+1. Sign in at **vercel.com** with your GitHub account.
+2. **Add New → Project → Import** `Nej2005/ARAL`.
+3. Leave *Root Directory* as the repository root and *Framework Preset* as **Other**. `vercel.json` provides the build settings.
+4. Under **Environment Variables**, add:
 
 | Variable | Value |
 |---|---|
 | `GEMINI_API_KEY` | your Gemini key |
-| `DATABASE_URL` | a hosted PostgreSQL URL (e.g. Neon or Supabase, both have free tiers) |
-| `CORS_ORIGINS` | your Vercel URL, e.g. `https://aral.vercel.app` (only needed if the frontend is served from another domain) |
-| `LLM_MIN_SECONDS_BETWEEN_CALLS` | `0`–`2` (each function call is short-lived) |
+| `DATABASE_URL` | the connection string from step 1 |
+| `APP_PASSCODE` | a passcode you choose (the app will ask for it) |
+| `LLM_MIN_SECONDS_BETWEEN_CALLS` | `1` |
 
-## Still to do before it works on Vercel
+5. **Deploy.**
 
-These come from how serverless functions behave, not from bugs in ARAL:
+### 3. Check it
+- Open `https://<your-project>.vercel.app/api/v1/health`. It should show `"database": "postgresql"` and `"passcode_required": true`.
+- Open `https://<your-project>.vercel.app`, enter the passcode, and upload a lesson.
 
-1. **Database.** The function's disk is temporary, so SQLite in `/tmp` is wiped between runs. Set
-   `DATABASE_URL` to a hosted PostgreSQL. The models and migrations already work with PostgreSQL.
-2. **Uploaded files.** `backend/storage/` lives on disk. Move uploads to object storage (e.g. Vercel Blob)
-   and upload from the browser directly to it, because Vercel limits request bodies to about **4.5 MB**.
-3. **Background jobs.** Extraction and exam generation run after the response is sent. On serverless
-   this work can be cut off when the response ends. Run them through a queue/worker, or process in the
-   request with a longer `maxDuration` (Pro plan) and poll for status.
-4. **Time limits.** A large file may take longer than one function call allows. Extraction already saves
-   progress per window, so it can be resumed in several calls.
-5. **Old `.ppt` files.** LibreOffice is not available on Vercel; accept PDF and `.pptx` only there.
-6. **Privacy.** Once online, anyone with the URL could use your Gemini quota. Add a login or a shared
-   passcode first.
+### 4. Updates
+Every push to `main` on GitHub redeploys automatically.
 
-## Deploy steps (when ready)
+## Known limits online
 
-1. Push the repository to GitHub.
-2. In Vercel: **Add New → Project →** import the repository. Leave the root directory as the repo root;
-   `vercel.json` provides the build settings.
-3. Add the environment variables above, then deploy.
-4. Open `https://<your-project>.vercel.app/api/v1/health` to check that the backend answers.
+- **Keep the tab open** while a file is being read. Processing continues only while the page is open; it resumes where it stopped when you come back.
+- **Function timeout.** `vercel.json` asks for 300 seconds per call. If your plan allows less, lower `maxDuration` (60 is fine: one step is a single Gemini call, usually 5–20 s).
+- **Old `.ppt` files** can't be converted online (no LibreOffice). Save them as `.pptx` first.
+- **Free Gemini quota** is shared by everyone who has the passcode.
+- **Database size.** Free PostgreSQL tiers hold about 0.5 GB. Uploaded bytes are deleted after reading, so only text is kept long-term.

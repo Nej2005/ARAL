@@ -87,25 +87,42 @@ def _existing_triples(db: Session, doc_id: str) -> list[tuple[SourceItem, str, s
     return [(r, r.term or "", r.body, list(r.aliases or [])) for r in rows]
 
 
-def extract_items(db: Session, doc: Document) -> int:
-    """Run extraction from `doc.extraction_progress` onward. Returns items added.
+def window_count(doc: Document) -> int:
+    """How many extraction steps a document needs (one Gemini call each)."""
+    return len(_windows([None] * max(doc.page_count, 0), settings.extraction_window_pages))  # type: ignore[list-item]
 
-    Items are committed after every window so a quota stop can resume later.
+
+def extract_next_window(db: Session, doc: Document) -> bool:
+    """Run ONE extraction window (the next one after `doc.extraction_progress`).
+
+    Returns True when every window is done. Items are committed per window so a stop can resume.
     Raises llm.LLMError / llm.LLMQuotaExceeded; the caller sets the document status.
     """
     pages = db.query(DocumentPage).filter(DocumentPage.document_id == doc.id).order_by(DocumentPage.page_no).all()
     by_no = {p.page_no: p for p in pages}
     windows = _windows(pages, settings.extraction_window_pages)
+    w_idx = doc.extraction_progress
+    if w_idx >= len(windows):
+        return True
+    window = windows[w_idx]
+    if any((p.text or "").strip() for p in window):
+        _extract_one(db, doc, window, by_no, w_idx, len(windows))
+    doc.extraction_progress = w_idx + 1
+    db.commit()
+    return doc.extraction_progress >= len(windows)
+
+
+def extract_items(db: Session, doc: Document) -> None:
+    """Run every remaining window in a row (used by tests and scripts)."""
+    while not extract_next_window(db, doc):
+        pass
+
+
+def _extract_one(db: Session, doc: Document, window, by_no, w_idx: int, total: int) -> int:
     added = 0
-    for w_idx, window in enumerate(windows):
-        if w_idx < doc.extraction_progress:
-            continue
-        if not any((p.text or "").strip() for p in window):
-            doc.extraction_progress = w_idx + 1
-            db.commit()
-            continue
+    if True:
         text = _window_text(window)
-        result = _extract_window(text, label=f"extract doc={doc.id[:8]} win={w_idx + 1}/{len(windows)}")
+        result = _extract_window(text, label=f"extract doc={doc.id[:8]} win={w_idx + 1}/{total}")
 
         validated: list[ValidatedItem] = []
         allowed_pages = {p.page_no for p in window}
@@ -146,8 +163,6 @@ def extract_items(db: Session, doc: Document) -> int:
                 topic=v.topic, topic_key=v.topic_key,
             ))
             added += 1
-        doc.extraction_progress = w_idx + 1
-        db.commit()
     return added
 
 

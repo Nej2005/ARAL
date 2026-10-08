@@ -13,14 +13,15 @@ HERE = Path(__file__).parent
 c = httpx.Client(timeout=60)
 
 
-def poll(url, key="status", done=("ready", "failed"), limit=240):
+def drive(url, limit=240):
+    """Call POST .../process until the document / exam is ready or failed (what the frontend does)."""
     t0 = time.time()
     while time.time() - t0 < limit:
-        r = c.get(url).json()
-        if r.get(key) in done:
+        r = c.post(url + "/process").json()
+        if r.get("done"):
             return r
-        time.sleep(2)
-    raise SystemExit(f"timeout polling {url}: {r}")
+        time.sleep(0.5)
+    raise SystemExit(f"timeout processing {url}: {r}")
 
 
 print("health:", c.get(f"{API}/health").json())
@@ -32,7 +33,7 @@ for name in ("Lesson 3 - Photosynthesis.pptx", "Lesson 4 - Cellular Respiration.
     ids.append(r.json()["id"])
 
 for did in ids:
-    d = poll(f"{API}/documents/{did}")
+    d = drive(f"{API}/documents/{did}")
     print(f"doc {d['filename']}: {d['status']} pages={d['page_count']} items={d['item_count']} "
           f"kinds={d['items_by_kind']} err={d.get('error_code')} {d.get('error_message') or ''}")
     if d["status"] != "ready":
@@ -51,7 +52,7 @@ print("availability:", av)
 
 e = c.post(f"{API}/reviewers/{rv['id']}/exams", json={"types": ["mcq", "true_false", "identification"], "count": 6})
 print("exam create:", e.status_code, e.json().get("id") or e.json())
-ex = poll(f"{API}/exams/{e.json()['id']}")
+ex = drive(f"{API}/exams/{e.json()['id']}")
 print("exam:", ex["status"], "actual", ex["actual_count"], "shortfall", ex["shortfall"], ex.get("error_code"), ex.get("error_message") or "")
 if ex["status"] != "ready":
     sys.exit("generation failed")

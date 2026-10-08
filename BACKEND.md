@@ -46,8 +46,8 @@ The frontend is designed later. This document defines everything the frontend wi
 | LLM | **Google Gen AI SDK** (`google-genai`), model `gemini-3.8-flash` on the **free tier** | Fact extraction, distractor choice, True/False falsification, rationales. Free, with no credit card needed (§13) |
 | PDF export | **fpdf2** + a bundled Unicode font (Noto Sans) | Pure Python, no system libraries; handles ñ, é, etc. |
 | CSV export | Python `csv` module | Anki-compatible text import |
-| Background jobs | FastAPI `BackgroundTasks` | Extraction and generation take seconds to minutes; enough for localhost |
-| File storage | Local folder (`STORAGE_DIR`) | |
+| Processing | **Steps driven by the client**: `POST …/process` runs one step (one Gemini call) and returns; the frontend repeats until `ready`. No background jobs | Works the same on localhost and on a serverless host (Vercel); progress is saved per step |
+| File storage | **In the database** (`document_files`), uploaded in 3 MB chunks; the bytes are deleted once the pages are read | No disk or file service needed; fits the 4.5 MB request limit of serverless hosts |
 | Tests | **pytest** + fixture files + mocked LLM client | |
 
 ---
@@ -241,15 +241,18 @@ the items used in a reviewer are the distinct `questions.source_item_id` of that
 ## 5. Ingestion (upload → pages)
 
 ### 5.1 Flow
-1. `POST /documents` accepts the file and checks the extension, the MIME type and the size (`MAX_UPLOAD_MB`, default 25). An optional `reviewer_id` form field adds the document to that reviewer straight away.
-2. Compute `sha256` while saving to a temp file. **If the same file already exists**, stop here (§5.5).
-3. Move it to `STORAGE_DIR/{document_id}/original.{ext}` and create the `documents` row with `status=uploaded`.
-4. Return `202` and start the background job `extract_document(document_id)`:
-   - `status=extracting`
-   - Extract the pages (§5.2) and save them to `document_pages`
-   - Compute `text_sha256`. **If the same text was already processed**, copy its items instead of calling Gemini (§5.5)
-   - Otherwise build the source items (§6)
-   - `status=ready`. On any error: `status=failed` + `error_code`.
+**Upload (chunked, from the browser):**
+1. The browser hashes the file (SHA-256) and calls `POST /uploads` with `{filename, size, sha256, reviewer_id?}`. The extension and size (`MAX_UPLOAD_MB`, default 25) are checked. **If the same file already exists**, the response says `duplicate: true` with the existing document and nothing is uploaded (§5.5).
+2. `PUT /uploads/{id}/chunks/{n}` sends the file in 3 MB chunks (`UPLOAD_CHUNK_MB`).
+3. `POST /uploads/{id}/complete` assembles the chunks, verifies the size and hash, checks the file's magic bytes, stores the bytes in `document_files`, creates the `documents` row with `status=uploaded`, and links it to the reviewer if one was given. Returns `202`.
+
+`POST /documents` (single multipart request) does the same in one call; it is used by scripts and tests.
+
+**Processing (steps driven by the client):** the frontend calls `POST /documents/{id}/process` until `done` is true.
+- Step 1 reads the file into `document_pages` (§5.2), computes `text_sha256`, and deletes the stored bytes. **If the same text was already processed**, the items are copied and the document is `ready` (§5.5).
+- Each further step runs one extraction window (§6.2) and saves its items.
+- After the last window: `status=ready`, or `failed` + `error_code` if nothing was found. On any error: `status=failed` + `error_code`.
+- A step holds a claim (`step_started_at`) for at most `STEP_CLAIM_SECONDS`; a second caller during that time gets the current state back without doing work (`busy: true`).
 
 ### 5.2 Extraction rules — keep the original formatting
 - **PDF:** use `page.get_text("text", sort=True)` per page. Keep line breaks. Join words hyphenated across a line break (`infor-\nmation` → `information`). Drop the page headers and footers that repeat on more than 50% of the pages.
@@ -425,8 +428,8 @@ class Falsification(BaseModel):
   - the edited statement is not identical to another true item in the reviewer (otherwise the edit could accidentally be true)
   - `explanation.changed_span = {"from": original_span, "to": replacement}`, so the feedback can show what was changed
 
-### 8.5 Generation job
-`POST /reviewers/{id}/exams` → creates the exam with `status=generating` → returns `202` → background job:
+### 8.5 Generation step
+`POST /reviewers/{id}/exams` → creates the exam with `status=generating` → returns `202`. The frontend then calls `POST /exams/{id}/process`, which builds the whole exam in one step:
 1. selection (§8.1)
 2. builds the Identification questions directly
 3. **one** batched Gemini call for all MCQ distractor picks, all T/F falsifications and all rationales in this exam (§8.6), split into batches of ~25 questions if needed
@@ -595,10 +598,20 @@ All errors use this shape:
 { "error": { "code": "ALL_ITEMS_REVIEWED", "message": "Every item in this reviewer has been part of an exam." } }
 ```
 
+When `APP_PASSCODE` is set, every route except `/health` needs the header `X-Passcode` (or `?passcode=` on download links); otherwise `401 PASSCODE_REQUIRED` / `PASSCODE_WRONG`.
+
+### Uploads (chunked)
+| Method & path | Body | Response |
+|---|---|---|
+| `POST /uploads` | `{ filename, size, sha256, reviewer_id? }` | `200 { upload_id, chunk_size, chunk_count, duplicate: false }`, or `200 { duplicate: true, document }` when the file is already in the library |
+| `PUT /uploads/{id}/chunks/{n}` | raw bytes | `200 { received_chunks, chunk_count }`; `400 BAD_CHUNK` |
+| `POST /uploads/{id}/complete` | `{ reviewer_id? }` | `202 document` (status `uploaded`); `409 UPLOAD_INCOMPLETE`; `400 UPLOAD_CORRUPT` |
+
 ### Documents (file library)
 | Method & path | Body | Response |
 |---|---|---|
 | `POST /documents` | multipart `file`, optional `reviewer_id` | New file: `202 { id, filename, status, duplicate: false }`. Same file already uploaded: `200 { id, filename, status, duplicate: true }` (§5.5) |
+| `POST /documents/{id}/process` | — | Runs one processing step (§5.1) and returns the document with `done`, `busy`, `steps_done`, `steps_total`. Call until `done` |
 | `GET /documents` | — | `200 [ { id, filename, file_type, status, page_count, item_count, reviewer_ids, created_at } ]` |
 | `GET /documents/{id}` | — | `200 { ...above, error_code?, error_message?, items_by_kind: {definition, fact}, extraction_version, outdated }`. The frontend polls this until `status` is `ready` or `failed`. |
 | `POST /documents/{id}/reprocess` | — | `202 { id, status: "extracting" }` (§5.5) |
@@ -623,7 +636,8 @@ All errors use this shape:
 | Method & path | Body | Response |
 |---|---|---|
 | `POST /reviewers/{id}/exams` | `{ "types": ["mcq","true_false"], "count": 20, "scope"?: {...} }` | `202 { id, status: "generating" }`; `409 DOCUMENTS_NOT_READY`; `409 ALL_ITEMS_REVIEWED`; `422 INVALID_SCOPE` |
-| `GET /exams/{id}` | — | `200 { id, reviewer_id, status, types, scope, requested_count, actual_count, shortfall }`. The frontend polls this until `status` is `ready`. No questions are included; they are served one card at a time through attempts. |
+| `POST /exams/{id}/process` | — | Builds the questions (§8.5) and returns the exam with `done`. Call until `done` |
+| `GET /exams/{id}` | — | `200 { id, reviewer_id, status, types, scope, requested_count, actual_count, shortfall }`. No questions are included; they are served one card at a time through attempts. |
 | `GET /reviewers/{id}/exams` | — | list of the reviewer's exams with their best (full-attempt) and latest score |
 | `POST /exams/{id}/next-set` | `{ "types"?: [...], "count"?: n, "scope"?: {...} \| null }` | `202 { id, status: "generating", parent_exam_id }` or `409 ALL_ITEMS_REVIEWED` |
 | `GET /exams/{id}/export?format=pdf&answer_key=end\|none` | — | PDF download (§11.1) |
@@ -696,7 +710,7 @@ All LLM calls go through this one module, so prompts, model, throttling and retr
 | Limit | Effect | How the backend handles it |
 |---|---|---|
 | **Rate limits** (requests per minute and per day). Google does not publish fixed numbers; they are shown per project in AI Studio and can change | A big file, or many files at once, can hit the limit | A throttle in `llm.py` allows one call at a time with a minimum gap (`LLM_MIN_SECONDS_BETWEEN_CALLS`). A `429` is retried with backoff. Extraction saves its progress after every window, so a stopped job **resumes where it left off** instead of starting over |
-| **Daily quota used up** | Processing has to wait until the quota resets | The job stops with `LLM_QUOTA_EXCEEDED`. The document/exam shows that error, and **Reprocess** / generating again later continues from the saved progress. If `GEMINI_FALLBACK_MODEL` is set, the job tries that model first before stopping |
+| **Daily quota used up** | Processing has to wait until the quota resets | The step fails with `LLM_QUOTA_EXCEEDED`. The document/exam shows that error, and **Reprocess** (resume) / generating again later continues from the saved progress. If `GEMINI_FALLBACK_MODEL` is set, the step tries that model first before stopping |
 | **Data use:** on the free tier, Google may use the prompts and responses to improve its products, and human reviewers may read them | Lesson text is sent to Google | Fine for normal lesson material. **Don't upload confidential or personal files.** The upload screen should say this |
 
 The app's design already keeps calls low: questions are built from items extracted **once** per file, duplicates are never reprocessed (§5.5), each exam needs only 1–2 calls, and answering, Restart, Retry mistakes and Export need **none**.
@@ -752,8 +766,13 @@ MAX_UPLOAD_MB=25
 MAX_EXAM_ITEMS=100
 IDENT_FUZZY_THRESHOLD=90
 SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe   # needed for .ppt only
-CORS_ORIGINS=http://localhost:5173
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+UPLOAD_CHUNK_MB=3               # browser upload chunk size
+STEP_CLAIM_SECONDS=150          # how long one processing step may hold a document / exam
+APP_PASSCODE=                   # optional; set it when the app is online (docs/DEPLOYMENT.md)
 ```
+
+On Vercel, `DATABASE_URL` must point at a PostgreSQL database (`postgresql://…`); see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ---
 

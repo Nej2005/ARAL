@@ -300,6 +300,12 @@ frontend/
 
 ---
 
+## 10b. Uploads, processing and passcode (added for hosting)
+
+- **Uploads** go in 3 MB chunks (`src/api/upload.ts`): the file is hashed in the browser, duplicates are recognized before any bytes are sent, and each chunk is retried up to 3 times. Rows show *Checking… → Uploading 40% → Reading 2/5 → Ready*.
+- **Processing is driven by the page** (`src/lib/driver.ts`): while a file or exam is pending, the app calls `POST …/process` repeatedly (one loop per item, shared across screens). Closing the tab pauses it; opening the reviewer again resumes it.
+- **Passcode**: when `/health` reports `passcode_required`, a sheet asks once; the value is kept in `localStorage` (`aral-passcode`) and sent as `X-Passcode`. A 401 reopens the sheet.
+
 ## 11. Status
 
 Built in [frontend/](frontend/) (Oct 2026). `npm run dev` serves it at http://localhost:5173 against the backend on :8000.

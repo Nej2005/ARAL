@@ -5,9 +5,11 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { keys, useReviewer, useReviewerExams } from "../api/hooks";
 import type { AttemptStart, DocumentSummary, Exam } from "../api/types";
+import { uploadFile } from "../api/upload";
 import Header from "../components/Header";
 import Icon from "../components/Icon";
 import MiniBar from "../components/MiniBar";
+import { docPending, driveDocument, useDriveDocuments } from "../lib/driver";
 import { describeError, shortDate, TYPE_SHORT } from "../lib/format";
 import { useToast } from "../lib/toast";
 import ExportSheet from "../sheets/ExportSheet";
@@ -26,10 +28,16 @@ export default function Reviewer() {
   const [sheet, setSheet] = useState<SheetName>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
+  useDriveDocuments(qc, rv.data?.documents);
+
   const addFiles = useMutation({
     mutationFn: async (files: File[]) => {
       const out: DocumentSummary[] = [];
-      for (const f of files) out.push(await api.upload<DocumentSummary>("/documents", f, { reviewer_id: id }));
+      for (const f of files) {
+        const d = await uploadFile(f, { reviewerId: id });
+        out.push(d);
+        if (docPending(d.status)) driveDocument(qc, d.id);
+      }
       return out;
     },
     onSuccess: (docs) => {
@@ -51,10 +59,11 @@ export default function Reviewer() {
   });
 
   const reprocess = useMutation({
-    mutationFn: (docId: string) => api.post(`/documents/${docId}/reprocess`),
-    onSuccess: () => {
+    mutationFn: (docId: string) => api.post<DocumentSummary>(`/documents/${docId}/reprocess`),
+    onSuccess: (d) => {
       qc.invalidateQueries({ queryKey: keys.reviewer(id) });
-      toast("Reading again…");
+      driveDocument(qc, d.id);
+      toast(d.resumed ? "Continuing…" : "Reading again…");
     },
     onError: (e) => toast(describeError(e)),
   });
@@ -146,12 +155,12 @@ export default function Reviewer() {
                         </span>
                       ) : d.status === "failed" ? (
                         <span className="prog-cell">
-                          <button className="btn ghost small" onClick={() => reprocess.mutate(d.id)} style={{ minHeight: 36, paddingInline: 8 }}>
-                            <Icon name="reset" />{d.error_code === "INTERRUPTED" || d.error_code === "LLM_QUOTA_EXCEEDED" ? "Continue" : "Retry"}
+                          <button className="btn ghost small" onClick={() => reprocess.mutate(d.id)} style={{ minHeight: 36, paddingInline: 8 }} title={d.error_code ?? ""}>
+                            <Icon name="reset" />{d.error_code === "LLM_QUOTA_EXCEEDED" ? "Continue" : "Retry"}
                           </button>
                         </span>
                       ) : (
-                        <span className="prog-cell muted">Reading…</span>
+                        <span className="prog-cell muted">{d.steps_total ? `Reading ${Math.min(d.steps_done, d.steps_total)}/${d.steps_total}` : "Reading…"}</span>
                       )}
                       <button
                         className="icon-btn"

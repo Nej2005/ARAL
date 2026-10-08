@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -47,10 +48,16 @@ class Document(Base):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     page_count: Mapped[int] = mapped_column(Integer, default=0)
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    # Set while one request is running a processing step; lets concurrent callers back off (jobs.py).
+    step_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     pages: Mapped[list["DocumentPage"]] = relationship(
         back_populates="document", cascade="all, delete-orphan", order_by="DocumentPage.page_no"
+    )
+    file: Mapped["DocumentFile | None"] = relationship(
+        back_populates="document", cascade="all, delete-orphan", uselist=False
     )
     items: Mapped[list["SourceItem"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
@@ -65,6 +72,54 @@ class Document(Base):
 
     def page_label(self, page_no: int) -> str:
         return f"slide {page_no}" if self.page_unit == "slide" else f"p. {page_no}"
+
+
+class DocumentFile(Base):
+    """The uploaded bytes, kept in the database so the app has no disk dependency.
+
+    Deleted once the pages have been read: everything after that works from `document_pages`.
+    """
+
+    __tablename__ = "document_files"
+
+    document_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    size: Mapped[int] = mapped_column(Integer)
+
+    document: Mapped[Document] = relationship(back_populates="file")
+
+
+class UploadSession(Base):
+    """A chunked upload in progress (BACKEND.md §5.1). Chunks are assembled on complete."""
+
+    __tablename__ = "upload_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    owner_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    filename: Mapped[str] = mapped_column(Text)
+    file_type: Mapped[str] = mapped_column(String(8))
+    size: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    chunk_size: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    chunks: Mapped[list["UploadChunk"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", order_by="UploadChunk.index"
+    )
+
+
+class UploadChunk(Base):
+    __tablename__ = "upload_chunks"
+
+    upload_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("upload_sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+
+    session: Mapped[UploadSession] = relationship(back_populates="chunks")
 
 
 class DocumentPage(Base):
@@ -172,6 +227,7 @@ class Exam(Base):
     status: Mapped[str] = mapped_column(String(16), default="generating")  # generating|ready|failed
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    step_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     reviewer: Mapped[Reviewer] = relationship(back_populates="exams")

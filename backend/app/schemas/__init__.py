@@ -75,3 +75,14 @@ class NextSet(BaseModel):
 class AnswerRequest(BaseModel):
     question_id: str
     response: str = Field(max_length=500)
+
+
+class StartUpload(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    size: int = Field(ge=1)
+    sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$")
+    reviewer_id: str | None = None
+
+
+class CompleteUpload(BaseModel):
+    reviewer_id: str | None = None

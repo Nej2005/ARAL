@@ -6,37 +6,16 @@ import csv
 import io
 
 from app.services import llm
-from tests.conftest import upload
+from tests.conftest import API, make_exam, next_set, process_document, upload
 from tests.fixtures import build_pdf, build_pptx
-
-API = "/api/v1"
 
 
 def _ready_reviewer(client, fixture_files, title="Biology Midterm"):
-    d1 = upload(client, fixture_files["pptx"]).json()
-    d2 = upload(client, fixture_files["pdf"]).json()
+    d1 = upload(client, fixture_files["pptx"])
+    d2 = upload(client, fixture_files["pdf"])
+    assert d1["status"] == "ready" and d2["status"] == "ready", (d1, d2)
     r = client.post(f"{API}/reviewers", json={"title": title, "document_ids": [d1["id"], d2["id"]]}).json()
     return r, d1, d2
-
-
-def _answer_all(client, attempt_id, correct=True, skip_indexes=()):
-    """Answer every card in order; returns the last response."""
-    m = client.get(f"{API}/attempts/{attempt_id}").json()
-    last = None
-    for card in m["cards"]:
-        if card["index"] in skip_indexes:
-            continue
-        c = client.get(f"{API}/attempts/{attempt_id}/cards/{card['index']}").json()
-        q = c["question"]
-        if correct:
-            # The test needs the right answer: look it up from the DB-free route by answering wrong first? No:
-            # we fetch it via the exam export answer key only in other tests; here use a deliberately wrong answer.
-            resp = _wrong_answer(q)
-        else:
-            resp = _wrong_answer(q)
-        last = client.post(f"{API}/attempts/{attempt_id}/answer", json={"question_id": q["id"], "response": resp})
-        assert last.status_code == 200, last.text
-    return last
 
 
 def _wrong_answer(q):
@@ -51,52 +30,61 @@ def _wrong_answer(q):
 
 
 def test_upload_extract_and_duplicates(client, fixture_files, fake_llm, tmp_path):
-    r = upload(client, fixture_files["pptx"])
-    assert r.status_code == 202 and r.json()["duplicate"] is False
-    doc = client.get(f"{API}/documents/{r.json()['id']}").json()
-    assert doc["status"] == "ready", doc
-    assert doc["page_count"] == 5
-    assert doc["item_count"] >= 10
-    assert doc["items_by_kind"]["definition"] >= 8
-    assert doc["outdated"] is False
-    calls_after_first = len(fake_llm.calls)
-    assert calls_after_first == 1  # 5 slides fit in one window
+    first = upload(client, fixture_files["pptx"], process=False)
+    assert first["_status_code"] == 202 and first["duplicate"] is False and first["status"] == "uploaded"
+    # step 1 reads the pages, step 2 is the single Gemini window (5 slides fit in one)
+    s1 = client.post(f"{API}/documents/{first['id']}/process").json()
+    assert s1["status"] == "extracting" and s1["page_count"] == 5 and s1["steps_done"] == 1 and s1["steps_total"] == 2
+    assert len(fake_llm.calls) == 0
+    s2 = client.post(f"{API}/documents/{first['id']}/process").json()
+    assert s2["status"] == "ready" and s2["done"] is True and s2["item_count"] >= 10
+    assert s2["items_by_kind"]["definition"] >= 8 and s2["outdated"] is False
+    assert len(fake_llm.calls) == 1
+    # processing a ready document is a no-op
+    assert client.post(f"{API}/documents/{first['id']}/process").json()["status"] == "ready"
+    assert len(fake_llm.calls) == 1
 
     # Same bytes again -> 200, duplicate, no Gemini call
-    r2 = upload(client, fixture_files["pptx"])
-    assert r2.status_code == 200 and r2.json()["duplicate"] is True and r2.json()["id"] == doc["id"]
-    assert len(fake_llm.calls) == calls_after_first
+    again = upload(client, fixture_files["pptx"])
+    assert again["_status_code"] == 200 and again["duplicate"] is True and again["id"] == first["id"]
+    assert len(fake_llm.calls) == 1
 
     # Same text in a different file (new bytes) -> items copied, no Gemini call
     other = build_pptx(tmp_path / "again.pptx", variant="saved again")
-    r3 = upload(client, other)
-    assert r3.status_code == 202 and r3.json()["duplicate"] is False
-    d3 = client.get(f"{API}/documents/{r3.json()['id']}").json()
-    assert d3["status"] == "ready" and d3["copied_from_document_id"] == doc["id"]
-    assert d3["item_count"] == doc["item_count"]
-    assert len(fake_llm.calls) == calls_after_first
-
+    d3 = upload(client, other)
+    assert d3["duplicate"] is False and d3["status"] == "ready" and d3["copied_from_document_id"] == first["id"]
+    assert d3["item_count"] == s2["item_count"]
+    assert len(fake_llm.calls) == 1
     assert len(client.get(f"{API}/documents").json()) == 2
+
+
+def test_file_bytes_are_dropped_after_pages_are_read(client, fixture_files, session):
+    from app.models import DocumentFile
+
+    d = upload(client, fixture_files["pdf"], process=False)
+    assert session.get(DocumentFile, d["id"]) is not None
+    client.post(f"{API}/documents/{d['id']}/process")
+    session.expire_all()
+    assert session.get(DocumentFile, d["id"]) is None
 
 
 def test_upload_rejects_bad_files(client, tmp_path):
     bad = tmp_path / "notes.txt"
     bad.write_text("hello")
-    assert upload(client, bad).json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+    assert upload(client, bad)["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
     fake_pdf = tmp_path / "fake.pdf"
     fake_pdf.write_bytes(b"not really a pdf")
-    assert upload(client, fake_pdf).json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+    assert upload(client, fake_pdf)["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
 
 
 def test_scanned_pdf_fails_cleanly_and_duplicate_failed_is_retried(client, tmp_path, fake_llm):
     from tests.fixtures import build_empty_pdf
 
     p = build_empty_pdf(tmp_path / "scan.pdf")
-    r = upload(client, p)
-    d = client.get(f"{API}/documents/{r.json()['id']}").json()
+    d = upload(client, p)
     assert d["status"] == "failed" and d["error_code"] == "NO_EXTRACTABLE_TEXT"
-    r2 = upload(client, p)
-    assert r2.status_code == 202 and r2.json()["duplicate"] is True  # re-extraction attempted
+    r2 = upload(client, p, process=False)
+    assert r2["_status_code"] == 202 and r2["duplicate"] is True and r2["status"] == "uploaded"  # re-run offered
 
 
 def test_quota_stop_resumes_where_it_left_off(client, tmp_path, fake_llm, monkeypatch):
@@ -105,7 +93,6 @@ def test_quota_stop_resumes_where_it_left_off(client, tmp_path, fake_llm, monkey
 
     monkeypatch.setattr(settings, "extraction_window_pages", 2)  # 4 pages -> 3 windows (1-page overlap)
     pdf = build_pdf(tmp_path / "long.pdf")
-    fake_llm.fail_with = None
     calls = {"n": 0}
     real = fake_llm.__call__
 
@@ -116,50 +103,47 @@ def test_quota_stop_resumes_where_it_left_off(client, tmp_path, fake_llm, monkey
         return real(system, user, schema, label)
 
     llm.set_backend(flaky)
-    r = upload(client, pdf)
-    d = client.get(f"{API}/documents/{r.json()['id']}").json()
+    d = upload(client, pdf)
     assert d["status"] == "failed" and d["error_code"] == "LLM_QUOTA_EXCEEDED"
     assert d["extraction_progress"] == 1 and d["item_count"] > 0  # first window was saved
+    assert d["steps_done"] == 2 and d["steps_total"] == 4
 
     rr = client.post(f"{API}/documents/{d['id']}/reprocess")
     assert rr.status_code == 202 and rr.json()["resumed"] is True
-    d2 = client.get(f"{API}/documents/{d['id']}").json()
+    d2 = process_document(client, d["id"])
     assert d2["status"] == "ready"
     assert calls["n"] == 4  # 1 ok + 1 fail + 2 remaining windows (never redid window 1)
     assert d2["item_count"] >= len([l for _, ls in RESP_PAGES for l in ls]) - 2
 
 
-def test_interrupted_jobs_are_recovered_at_startup(client, fixture_files, session):
-    from app import jobs
-    from app.models import Document, Exam
-
-    r, d1, _ = _ready_reviewer(client, fixture_files)
-    e = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["mcq"], "count": 2}).json()
-    session.get(Document, d1["id"]).status = "extracting"
-    session.get(Exam, e["id"]).status = "generating"
-    session.commit()
-    assert jobs.recover_interrupted() == 2
-    d = client.get(f"{API}/documents/{d1['id']}").json()
-    assert d["status"] == "failed" and d["error_code"] == "INTERRUPTED"
-    assert client.get(f"{API}/exams/{e['id']}").json()["error_code"] == "INTERRUPTED"
-    rr = client.post(f"{API}/documents/{d1['id']}/reprocess").json()
-    assert rr["resumed"] is True  # keeps the windows already saved
-    assert client.get(f"{API}/documents/{d1['id']}").json()["status"] == "ready"
-
-
 def test_reprocess_supersedes_items_and_old_exams_still_render(client, fixture_files, fake_llm):
     r, d1, d2 = _ready_reviewer(client, fixture_files)
-    e = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["identification"], "count": 3}).json()
-    assert client.get(f"{API}/exams/{e['id']}").json()["status"] == "ready"
+    e = make_exam(client, r["id"], {"types": ["identification"], "count": 3})
+    assert e["status"] == "ready"
     before = client.get(f"{API}/reviewers/{r['id']}").json()
     assert before["used_items"] == 3
-    assert client.post(f"{API}/documents/{d1['id']}/reprocess").status_code == 202
+    rr = client.post(f"{API}/documents/{d1['id']}/reprocess")
+    assert rr.status_code == 202 and rr.json()["resumed"] is False
+    assert process_document(client, d1["id"])["status"] == "ready"
     after = client.get(f"{API}/reviewers/{r['id']}").json()
     assert after["item_count"] == before["item_count"]
-    # new items have new ids -> the ones used from d1 no longer count as used
-    assert after["used_items"] <= before["used_items"]
+    assert after["used_items"] <= before["used_items"]  # new ids -> not counted as used
     a = client.post(f"{API}/exams/{e['id']}/attempts").json()
     assert a["card"]["question"]["prompt"]
+
+
+def test_stale_claims_are_cleared_and_busy_documents_are_skipped(client, fixture_files, session, fake_llm):
+    from app import jobs
+    from app.models import Document, utcnow
+
+    d = upload(client, fixture_files["pdf"], process=False)
+    doc = session.get(Document, d["id"])
+    doc.step_started_at = utcnow()  # another request is "working" on it
+    session.commit()
+    busy = client.post(f"{API}/documents/{d['id']}/process").json()
+    assert busy["busy"] is True and busy["status"] == "uploaded" and busy["page_count"] == 0  # no work done
+    assert jobs.clear_stale_claims() == 1
+    assert process_document(client, d["id"])["status"] == "ready"
 
 
 # --------------------------------------------------------------------------- reviewers
@@ -169,7 +153,7 @@ def test_reviewer_crud_outline_and_document_rules(client, fixture_files):
     r, d1, d2 = _ready_reviewer(client, fixture_files)
     assert r["document_count"] == 2 and r["status"] == "ready" and r["used_items"] == 0
     lst = client.get(f"{API}/reviewers").json()
-    assert lst[0]["id"] == r["id"]
+    assert lst[0]["id"] == r["id"] and lst[0]["last_score"] is None
 
     o = client.get(f"{API}/reviewers/{r['id']}/outline").json()
     assert [d["document_id"] for d in o["documents"]] == [d1["id"], d2["id"]]
@@ -196,12 +180,12 @@ def test_reviewer_crud_outline_and_document_rules(client, fixture_files):
 
 def test_exam_needs_ready_documents(client, fixture_files, fake_llm):
     fake_llm.fail_with = llm.LLMError("boom")
-    d = upload(client, fixture_files["pdf"]).json()
-    assert client.get(f"{API}/documents/{d['id']}").json()["status"] == "failed"
+    d = upload(client, fixture_files["pdf"])
+    assert d["status"] == "failed"
     r = client.post(f"{API}/reviewers", json={"title": "X", "document_ids": [d["id"]]}).json()
     assert r["status"] == "needs_attention"
-    e = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["mcq"], "count": 5})
-    assert e.status_code == 409 and e.json()["error"]["code"] == "DOCUMENTS_NOT_READY"
+    e = make_exam(client, r["id"], {"types": ["mcq"], "count": 5})
+    assert e["_status_code"] == 409 and e["error"]["code"] == "DOCUMENTS_NOT_READY"
 
 
 # --------------------------------------------------------------------------- exams + flashcards
@@ -212,14 +196,15 @@ def test_full_exam_flow(client, fixture_files, fake_llm):
     av = client.post(f"{API}/reviewers/{r['id']}/availability", json={"types": ["mcq", "true_false", "identification"]}).json()
     assert av["unused_items"] == av["total_items"] >= 20 and av["unused_outside_scope"] == 0
 
-    e = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["mcq", "true_false", "identification"], "count": 9})
-    assert e.status_code == 202
-    exam = client.get(f"{API}/exams/{e.json()['id']}").json()
+    created = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["mcq", "true_false", "identification"], "count": 9})
+    assert created.status_code == 202 and created.json()["status"] == "generating"
+    assert client.get(f"{API}/reviewers/{r['id']}").json()["used_items"] == 0  # not until it's ready
+    exam = client.post(f"{API}/exams/{created.json()['id']}/process").json()
     assert exam["status"] == "ready", exam
-    assert exam["actual_count"] == 9 and exam["shortfall"] == 0
+    assert exam["actual_count"] == 9 and exam["shortfall"] == 0 and exam["done"] is True
     assert sum(1 for c in fake_llm.calls if c[0] == "GenerationBatch") == 1  # one batched call
-
-    # coverage: 9 items now used
+    assert client.post(f"{API}/exams/{exam['id']}/process").json()["status"] == "ready"  # no-op
+    assert sum(1 for c in fake_llm.calls if c[0] == "GenerationBatch") == 1
     assert client.get(f"{API}/reviewers/{r['id']}").json()["used_items"] == 9
 
     a = client.post(f"{API}/exams/{exam['id']}/attempts")
@@ -241,7 +226,6 @@ def test_full_exam_flow(client, fixture_files, fake_llm):
         types[q["type"]] = types.get(q["type"], 0) + 1
     assert types == {"mcq": 3, "true_false": 3, "identification": 3}
 
-    # Skip card 1, answer card 2
     c2 = client.get(f"{API}/attempts/{aid}/cards/2").json()
     assert client.get(f"{API}/attempts/{aid}").json()["last_viewed_index"] == 2
     q2 = c2["question"]
@@ -258,14 +242,11 @@ def test_full_exam_flow(client, fixture_files, fake_llm):
         assert f["changed_span"]["from"] != f["changed_span"]["to"]
         assert f["changed_span"]["to"] in q2["prompt"]
 
-    # Answer is final
     again = client.post(f"{API}/attempts/{aid}/answer", json={"question_id": q2["id"], "response": "x"})
     assert again.status_code == 409 and again.json()["error"]["code"] == "ALREADY_ANSWERED"
-    # Going back shows the saved feedback
     back = client.get(f"{API}/attempts/{aid}/cards/2").json()
     assert back["answered"] is True and back["feedback"] == f
 
-    # Answer the rest except card 1, then the wrap-around points back to 1
     last = None
     for i in range(3, 10):
         q = client.get(f"{API}/attempts/{aid}/cards/{i}").json()["question"]
@@ -274,7 +255,6 @@ def test_full_exam_flow(client, fixture_files, fake_llm):
     assert client.get(f"{API}/attempts/{aid}/summary").json()["error"]["code"] == "ATTEMPT_NOT_FINISHED"
     assert client.get(f"{API}/attempts/{aid}/cards/99").status_code == 404
 
-    # Finish with card 1 skipped
     s = client.post(f"{API}/attempts/{aid}/finish").json()
     assert s["total"] == 9 and s["answered"] == 8 and s["skipped"] == 1
     assert s["correct_count"] + len(s["wrong_cards"]) + len(s["skipped_cards"]) == 9
@@ -284,7 +264,6 @@ def test_full_exam_flow(client, fixture_files, fake_llm):
     assert skipped["your_answer"] is None and skipped["correct_answer"]["text"]
     assert client.post(f"{API}/attempts/{aid}/answer", json={"question_id": q2["id"], "response": "x"}).json()["error"]["code"] == "ATTEMPT_COMPLETED"
 
-    # Retry mistakes: exactly the wrong + skipped cards, no coverage change, no LLM call
     n_calls = len(fake_llm.calls)
     rm = client.post(f"{API}/attempts/{aid}/retry-mistakes")
     assert rm.status_code == 201 and rm.json()["kind"] == "mistakes"
@@ -294,25 +273,25 @@ def test_full_exam_flow(client, fixture_files, fake_llm):
     rid = rm.json()["attempt_id"]
     assert client.post(f"{API}/attempts/{rid}/retry-mistakes").json()["error"]["code"] == "ATTEMPT_NOT_FINISHED"
 
-    # Restart: same questions, new attempt number
     rs = client.post(f"{API}/exams/{exam['id']}/attempts").json()
     assert rs["attempt_no"] == 3 and rs["total"] == 9
     lst = client.get(f"{API}/reviewers/{r['id']}/exams").json()
     assert lst[0]["id"] == exam["id"] and lst[0]["attempt_count"] == 3 and lst[0]["best_score"]["total"] == 9
+    assert lst[0]["latest_attempt_id"] == aid and lst[0]["in_progress_attempt_id"] == rs["attempt_id"]
+    assert client.get(f"{API}/reviewers").json()[0]["last_score"] == {"correct_count": s["correct_count"], "total": 9}
 
 
 def test_answers_graded_correctly_with_known_answers(client, fixture_files, session):
-    """Answer with the real correct answers (read from the DB) and check perfect score + NO_MISTAKES."""
     from app.models import Question
 
     r, *_ = _ready_reviewer(client, fixture_files)
-    e = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["mcq", "true_false", "identification"], "count": 6}).json()
+    e = make_exam(client, r["id"], {"types": ["mcq", "true_false", "identification"], "count": 6})
     att = client.post(f"{API}/exams/{e['id']}/attempts").json()
     aid = att["attempt_id"]
     for i in range(1, 7):
         card = client.get(f"{API}/attempts/{aid}/cards/{i}").json()
         q = session.get(Question, card["question"]["id"])
-        resp = q.correct_answer if q.type != "identification" else q.correct_answer.upper() + "  "  # case/space tolerant
+        resp = q.correct_answer if q.type != "identification" else q.correct_answer.upper() + "  "
         out = client.post(f"{API}/attempts/{aid}/answer", json={"question_id": q.id, "response": resp}).json()
         assert out["feedback"]["is_correct"] is True, (q.type, q.prompt, resp, out)
         assert out["feedback"]["why_yours_is_wrong"] is None
@@ -326,7 +305,7 @@ def test_identification_feedback_names_other_term_and_typo(client, fixture_files
     from app.models import Question, SourceItem
 
     r, *_ = _ready_reviewer(client, fixture_files)
-    e = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["identification"], "count": 6}).json()
+    e = make_exam(client, r["id"], {"types": ["identification"], "count": 6})
     aid = client.post(f"{API}/exams/{e['id']}/attempts").json()["attempt_id"]
     card = client.get(f"{API}/attempts/{aid}/cards/1").json()
     q = session.get(Question, card["question"]["id"])
@@ -335,7 +314,6 @@ def test_identification_feedback_names_other_term_and_typo(client, fixture_files
     assert out["feedback"]["is_correct"] is False
     assert out["feedback"]["why_yours_is_wrong"].startswith(f"'{other.term}' is a different concept")
 
-    # A one-letter typo is tolerated on a term long enough for it to stay a >= 90% match.
     tested_typo = False
     for i in range(2, 7):
         card = client.get(f"{API}/attempts/{aid}/cards/{i}").json()
@@ -356,45 +334,39 @@ def test_scope_next_set_coverage_reset(client, fixture_files, fake_llm):
     o = client.get(f"{API}/reviewers/{r['id']}/outline").json()
     pptx_items = sum(p["item_count"] for p in o["documents"][0]["pages"])
 
-    bad = client.post(f"{API}/reviewers/{r['id']}/exams",
-                      json={"types": ["mcq"], "count": 3, "scope": {"documents": [{"document_id": d1["id"], "pages": [[1, 99]]}]}})
-    assert bad.status_code == 422 and bad.json()["error"]["code"] == "INVALID_SCOPE"
+    bad = make_exam(client, r["id"], {"types": ["mcq"], "count": 3, "scope": {"documents": [{"document_id": d1["id"], "pages": [[1, 99]]}]}})
+    assert bad["_status_code"] == 422 and bad["error"]["code"] == "INVALID_SCOPE"
 
     scope = {"documents": [{"document_id": d1["id"]}]}
     av = client.post(f"{API}/reviewers/{r['id']}/availability", json={"types": ["mcq"], "scope": scope}).json()
     assert av["unused_items"] == pptx_items and av["unused_outside_scope"] == av["total_items"] - pptx_items
 
-    e1 = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["mcq"], "count": pptx_items, "scope": scope}).json()
-    e1 = client.get(f"{API}/exams/{e1['id']}").json()
+    e1 = make_exam(client, r["id"], {"types": ["mcq"], "count": pptx_items, "scope": scope})
     assert e1["status"] == "ready" and e1["actual_count"] == pptx_items and e1["scope"] == scope
 
-    # Everything inside the scope is used: next set inherits the scope -> 409 with items outside
-    ns = client.post(f"{API}/exams/{e1['id']}/next-set")
-    assert ns.status_code == 409 and ns.json()["error"]["code"] == "ALL_ITEMS_REVIEWED"
-    assert ns.json()["error"]["unused_outside_scope"] == av["total_items"] - pptx_items
+    ns = next_set(client, e1["id"])
+    assert ns["_status_code"] == 409 and ns["error"]["code"] == "ALL_ITEMS_REVIEWED"
+    assert ns["error"]["unused_outside_scope"] == av["total_items"] - pptx_items
 
-    # Explicit null scope widens to the whole reviewer, and asks for more than is left -> shortfall
-    ns2 = client.post(f"{API}/exams/{e1['id']}/next-set", json={"scope": None, "count": 99})
-    assert ns2.status_code == 202 and ns2.json()["parent_exam_id"] == e1["id"]
-    e2 = client.get(f"{API}/exams/{ns2.json()['id']}").json()
+    e2 = next_set(client, e1["id"], {"scope": None, "count": 99})
+    assert e2["_status_code"] == 202 and e2["parent_exam_id"] == e1["id"]
     assert e2["status"] == "ready" and e2["scope"] is None
     assert e2["actual_count"] == av["total_items"] - pptx_items and e2["shortfall"] == 99 - e2["actual_count"]
 
-    assert client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["mcq"], "count": 1}).json()["error"]["code"] == "ALL_ITEMS_REVIEWED"
+    assert make_exam(client, r["id"], {"types": ["mcq"], "count": 1})["error"]["code"] == "ALL_ITEMS_REVIEWED"
     assert client.post(f"{API}/reviewers/{r['id']}/coverage/reset").json()["coverage_epoch"] == 1
     assert client.get(f"{API}/reviewers/{r['id']}").json()["unused_items"] == av["total_items"]
-    assert client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["mcq"], "count": 1}).status_code == 202
-    # old exam still intact
+    assert make_exam(client, r["id"], {"types": ["mcq"], "count": 1})["status"] == "ready"
     assert client.get(f"{API}/exams/{e1['id']}").json()["actual_count"] == pptx_items
 
 
 def test_adding_a_document_later_adds_unused_items(client, fixture_files):
-    d1 = upload(client, fixture_files["pptx"]).json()
+    d1 = upload(client, fixture_files["pptx"])
     r = client.post(f"{API}/reviewers", json={"title": "One file", "document_ids": [d1["id"]]}).json()
-    e = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["true_false"], "count": 100}).json()
-    assert client.get(f"{API}/exams/{e['id']}").json()["actual_count"] == r["item_count"]
+    e = make_exam(client, r["id"], {"types": ["true_false"], "count": 100})
+    assert e["actual_count"] == r["item_count"]
     assert client.get(f"{API}/reviewers/{r['id']}").json()["unused_items"] == 0
-    d2 = upload(client, fixture_files["pdf"], reviewer_id=r["id"]).json()
+    d2 = upload(client, fixture_files["pdf"], reviewer_id=r["id"])
     rr = client.get(f"{API}/reviewers/{r['id']}").json()
     assert rr["document_count"] == 2 and rr["unused_items"] > 0
     assert d2["id"] in [d["id"] for d in rr["documents"]]
@@ -403,10 +375,9 @@ def test_adding_a_document_later_adds_unused_items(client, fixture_files):
 def test_generation_failure_is_reported_on_the_exam(client, fixture_files, fake_llm):
     r, *_ = _ready_reviewer(client, fixture_files)
     fake_llm.fail_with = llm.LLMQuotaExceeded("limit")
-    e = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["mcq"], "count": 3}).json()
-    ex = client.get(f"{API}/exams/{e['id']}").json()
+    ex = make_exam(client, r["id"], {"types": ["mcq"], "count": 3})
     assert ex["status"] == "failed" and ex["error_code"] == "LLM_QUOTA_EXCEEDED"
-    assert client.post(f"{API}/exams/{e['id']}/attempts").json()["error"]["code"] == "EXAM_NOT_READY"
+    assert client.post(f"{API}/exams/{ex['id']}/attempts").json()["error"]["code"] == "EXAM_NOT_READY"
     assert client.get(f"{API}/reviewers/{r['id']}").json()["used_items"] == 0  # failed exams don't use items
 
 
@@ -415,7 +386,7 @@ def test_bad_rationale_falls_back_to_template(client, fixture_files, fake_llm, s
 
     fake_llm.bad_rationale_for = {"q1", "q2", "q3"}
     r, *_ = _ready_reviewer(client, fixture_files)
-    e = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["identification"], "count": 3}).json()
+    e = make_exam(client, r["id"], {"types": ["identification"], "count": 3})
     qs = session.query(Question).filter(Question.exam_id == e["id"]).all()
     assert len(qs) == 3 and all(q.rationale.startswith("The lesson states: '") for q in qs)
 
@@ -425,7 +396,7 @@ def test_bad_rationale_falls_back_to_template(client, fixture_files, fake_llm, s
 
 def test_exports(client, fixture_files):
     r, d1, d2 = _ready_reviewer(client, fixture_files)
-    e = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["mcq", "true_false", "identification"], "count": 6}).json()
+    e = make_exam(client, r["id"], {"types": ["mcq", "true_false", "identification"], "count": 6})
 
     pdf = client.get(f"{API}/exams/{e['id']}/export?format=pdf")
     assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF") and len(pdf.content) > 5000
@@ -452,5 +423,4 @@ def test_exports(client, fixture_files):
     rows2 = list(csv.reader(io.StringIO(body2)))
     assert rows2 and all("file::sample-pdf" in r[2] for r in rows2)
     assert any(r[0] == "ATP" and r[1].startswith("the main energy-carrying molecule") for r in rows2)
-    # exports do not count as reviewed
-    assert client.get(f"{API}/reviewers/{r['id']}").json()["used_items"] == 6
+    assert client.get(f"{API}/reviewers/{r['id']}").json()["used_items"] == 6  # exports don't count as reviewed

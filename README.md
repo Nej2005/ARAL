@@ -62,10 +62,11 @@ end up sounding different from the lesson, and sometimes they're simply wrong.
 | | |
 |---|---|
 | Language / framework | Python 3.11+ / FastAPI |
-| Database | SQLite through SQLAlchemy 2, migrations with Alembic (PostgreSQL-ready) |
+| Database | SQLite locally, PostgreSQL when hosted; SQLAlchemy 2 with Alembic migrations. Uploaded files are stored in the database in chunks |
 | PDF reading | PyMuPDF |
 | PowerPoint reading | python-pptx (old `.ppt` converted with LibreOffice) |
 | Text matching | RapidFuzz (quote checks, answer grading) |
 | AI | Google Gemini API, free tier (`google-genai`), structured JSON output |
 | Exports | fpdf2 (PDF), Python `csv` (Anki) |
-| Tests | pytest with a fake Gemini, plus a Playwright end-to-end run |
+| Tests | pytest with a fake Gemini (run on SQLite and PostgreSQL), plus a Playwright end-to-end run |
+| Hosting | Runs on localhost; deployable to Vercel (static frontend + Python serverless function), see `docs/DEPLOYMENT.md` |

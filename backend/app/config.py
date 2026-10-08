@@ -21,12 +21,15 @@ class Settings(BaseSettings):
     extraction_window_pages: int = 15
 
     database_url: str = "sqlite:///./aral.db"
-    storage_dir: Path = Path("./storage")
+    storage_dir: Path = Path("./storage")  # scratch space for temp files only
     max_upload_mb: int = 25
+    upload_chunk_mb: int = 3  # under Vercel's 4.5 MB request limit
+    step_claim_seconds: int = 150  # how long one processing step may hold a document / exam
     max_exam_items: int = 100
     ident_fuzzy_threshold: int = 90
     soffice_path: str = "soffice"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    app_passcode: str = ""  # empty = no passcode (fine on localhost); set it when the app is online
 
     @field_validator("gemini_fallback_model", "soffice_path", "gemini_model", mode="before")
     @classmethod
@@ -43,6 +46,14 @@ class Settings(BaseSettings):
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
+
+    @property
+    def upload_chunk_bytes(self) -> int:
+        return self.upload_chunk_mb * 1024 * 1024
+
+    @property
+    def database_kind(self) -> str:
+        return "postgresql" if "postgres" in self.database_url else "sqlite"
 
     def resolved_storage_dir(self) -> Path:
         p = self.storage_dir

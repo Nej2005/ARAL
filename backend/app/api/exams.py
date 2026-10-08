@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
@@ -36,6 +36,7 @@ def exam_payload(e: Exam) -> dict:
         "parent_exam_id": e.parent_exam_id,
         "error_code": e.error_code,
         "error_message": e.error_message,
+        "busy": jobs.is_busy(e),
         "created_at": e.created_at.isoformat() if e.created_at else None,
     }
 
@@ -49,7 +50,7 @@ def _check_ready(r: Reviewer) -> None:
         raise AppError(409, "EMPTY_REVIEWER", "Add a file to this reviewer first.")
 
 
-def _start(db: Session, background: BackgroundTasks, r: Reviewer, types: list[str], count: int, scope,
+def _start(db: Session, r: Reviewer, types: list[str], count: int, scope,
            parent: Exam | None = None) -> JSONResponse:
     _check_ready(r)
     if count > settings.max_exam_items:
@@ -70,15 +71,23 @@ def _start(db: Session, background: BackgroundTasks, r: Reviewer, types: list[st
                 coverage_epoch=r.coverage_epoch, parent_exam_id=parent.id if parent else None, status="generating")
     db.add(exam)
     db.commit()
-    background.add_task(jobs.generate_exam, exam.id)
     return JSONResponse(status_code=202, content=exam_payload(exam))
 
 
 @router.post("/reviewers/{reviewer_id}/exams")
-def create_exam(reviewer_id: str, body: CreateExam, background: BackgroundTasks, db: Session = Depends(get_db)):
+def create_exam(reviewer_id: str, body: CreateExam, db: Session = Depends(get_db)):
     r = get_reviewer(db, reviewer_id)
     scope = _resolve_scope(db, r, body.scope)
-    return _start(db, background, r, body.types, body.count, scope)
+    return _start(db, r, body.types, body.count, scope)
+
+
+@router.post("/exams/{exam_id}/process")
+def process_exam(exam_id: str, db: Session = Depends(get_db)):
+    """Build the exam's questions (1-2 Gemini calls). Call until status is ready/failed."""
+    e = get_exam(db, exam_id)
+    e = jobs.exam_step(db, e)
+    db.refresh(e)
+    return {**exam_payload(e), **exam_scores(e), "done": e.status in ("ready", "failed")}
 
 
 @router.get("/exams/{exam_id}")
@@ -88,7 +97,7 @@ def get_exam_status(exam_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/exams/{exam_id}/next-set")
-def next_set(exam_id: str, background: BackgroundTasks, body: NextSet | None = None, db: Session = Depends(get_db)):
+def next_set(exam_id: str, body: NextSet | None = None, db: Session = Depends(get_db)):
     parent = get_exam(db, exam_id)
     r = parent.reviewer
     body = body or NextSet()
@@ -98,7 +107,7 @@ def next_set(exam_id: str, background: BackgroundTasks, body: NextSet | None = N
         scope = _resolve_scope(db, r, body.scope)  # explicit null = whole reviewer
     else:
         scope = parent.scope
-    return _start(db, background, r, types, count, scope, parent=parent)
+    return _start(db, r, types, count, scope, parent=parent)
 
 
 @router.get("/exams/{exam_id}/export")

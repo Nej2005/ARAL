@@ -61,15 +61,21 @@ def reviewer_summary(db: Session, r: Reviewer) -> dict:
 def reviewer_detail(db: Session, r: Reviewer) -> dict:
     out = reviewer_summary(db, r)
     counts = doc_item_counts(db, r)
+    from app import jobs
+    from app.services.knowledge import window_count
+
     out["documents"] = [
         {
             "id": d.id,
             "filename": d.filename,
             "file_type": d.file_type,
             "status": d.status,
+            "busy": jobs.is_busy(d),
             "error_code": d.error_code,
             "page_count": d.page_count,
             "page_unit": d.page_unit,
+            "steps_done": d.extraction_progress + (1 if d.page_count else 0),
+            "steps_total": (window_count(d) + 1) if d.page_count else None,
             "item_count": counts.get(d.id, {}).get("items", 0),
             "used_items": counts.get(d.id, {}).get("used", 0),
         }

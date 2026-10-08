@@ -41,3 +41,13 @@ The SQLite database (`backend/aral.db`) and uploaded files (`backend/storage/`) 
 | Full browser click-through (both servers running) | `cd frontend` → `node e2e/flow.mjs` (screenshots → `design/screenshots/`) |
 
 For the browser check, install Chromium once: `npx playwright install chromium`.
+
+To run the backend tests against PostgreSQL instead of SQLite, set `TEST_DATABASE_URL=postgresql://…`
+(the `pgserver` package can provide a throwaway local Postgres).
+
+## Optional settings
+
+- `APP_PASSCODE` in `backend/.env`: when set, the app asks for the passcode once per browser.
+  Leave it empty on localhost.
+- Processing (reading files, building exams) runs in steps driven by the open browser tab.
+  If you close the tab mid-way, it continues the next time you open the reviewer.

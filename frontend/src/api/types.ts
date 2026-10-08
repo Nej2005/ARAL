@@ -18,10 +18,16 @@ export interface DocumentSummary {
   reviewer_ids: string[];
   created_at: string | null;
   duplicate?: boolean;
+  busy?: boolean;
+  size?: number;
   error_code?: string | null;
   error_message?: string | null;
   extraction_progress?: number;
+  steps_done?: number;
+  steps_total?: number | null;
   outdated?: boolean;
+  done?: boolean;
+  resumed?: boolean;
 }
 
 export interface ReviewerSummary {
@@ -43,6 +49,9 @@ export interface ReviewerDoc {
   filename: string;
   file_type: string;
   status: DocStatus;
+  busy: boolean;
+  steps_done: number;
+  steps_total: number | null;
   error_code: string | null;
   page_count: number;
   page_unit: "page" | "slide";
@@ -76,6 +85,8 @@ export interface Exam {
   parent_exam_id: string | null;
   error_code: string | null;
   error_message: string | null;
+  busy?: boolean;
+  done?: boolean;
   created_at: string | null;
   attempt_count?: number;
   best_score?: Score | null;

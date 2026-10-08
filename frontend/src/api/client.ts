@@ -1,3 +1,5 @@
+import { getPasscode, requestPasscode } from "../lib/passcode";
+
 const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8000/api/v1";
 
 export class ApiError extends Error {
@@ -28,16 +30,28 @@ async function parseError(res: Response): Promise<ApiError> {
   } catch {
     /* no JSON body */
   }
-  return new ApiError(res.status, code, message, extra);
+  const err = new ApiError(res.status, code, message, extra);
+  if (res.status === 401 && (code === "PASSCODE_REQUIRED" || code === "PASSCODE_WRONG")) {
+    requestPasscode(code === "PASSCODE_WRONG");
+  }
+  return err;
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  let res: Response;
+function authHeaders(): Record<string, string> {
+  const p = getPasscode();
+  return p ? { "X-Passcode": p } : {};
+}
+
+async function doFetch(path: string, init: RequestInit = {}): Promise<Response> {
   try {
-    res = await fetch(BASE + path, init);
+    return await fetch(BASE + path, { ...init, headers: { ...authHeaders(), ...(init.headers as Record<string, string> | undefined) } });
   } catch {
     throw new ApiError(0, "OFFLINE", "Backend not reachable. Is it running on port 8000?");
   }
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const res = await doFetch(path, init);
   if (!res.ok) throw await parseError(res);
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -56,11 +70,17 @@ function filenameFrom(res: Response, fallback: string): string {
 }
 
 export const api = {
+  base: BASE,
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) => request<T>(path, json("POST", body)),
   patch: <T>(path: string, body?: unknown) => request<T>(path, json("PATCH", body)),
   del: <T>(path: string) => request<T>(path, json("DELETE")),
 
+  /** Raw bytes (one upload chunk). */
+  putBytes: <T>(path: string, body: Blob) =>
+    request<T>(path, { method: "PUT", body, headers: { "Content-Type": "application/octet-stream" } }),
+
+  /** Single-request upload; kept for small files and tests. The app uses `uploadFile` (chunked). */
   upload<T>(path: string, file: File, fields: Record<string, string> = {}): Promise<T> {
     const fd = new FormData();
     fd.append("file", file, file.name);
@@ -70,12 +90,7 @@ export const api = {
 
   /** Fetches a file (GET or POST) and hands it to the browser as a download. */
   async download(path: string, body?: unknown, fallbackName = "download"): Promise<string> {
-    let res: Response;
-    try {
-      res = await fetch(BASE + path, body === undefined ? {} : json("POST", body));
-    } catch {
-      throw new ApiError(0, "OFFLINE", "Backend not reachable.");
-    }
+    const res = await doFetch(path, body === undefined ? {} : json("POST", body));
     if (!res.ok) throw await parseError(res);
     const blob = await res.blob();
     const name = filenameFrom(res, fallbackName);
