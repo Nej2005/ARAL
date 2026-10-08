@@ -69,14 +69,3 @@ end up sounding different from the lesson, and sometimes they're simply wrong.
 | AI | Google Gemini API, free tier (`google-genai`), structured JSON output |
 | Exports | fpdf2 (PDF), Python `csv` (Anki) |
 | Tests | pytest with a fake Gemini, plus a Playwright end-to-end run |
-
-### Project layout
-```
-backend/     FastAPI app, database models, ingestion, question generation, exports, tests
-frontend/    React app (screens, sheets, components, API client)
-api/         Vercel serverless entry point for the backend
-docs/        Development and deployment notes
-design/      Clickable prototype and screenshots
-BACKEND.md   Backend specification
-FRONTEND.md  Frontend design specification
-```
