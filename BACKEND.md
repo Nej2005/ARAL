@@ -768,7 +768,7 @@ IDENT_FUZZY_THRESHOLD=90
 SOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe   # needed for .ppt only
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 UPLOAD_CHUNK_MB=3               # browser upload chunk size
-STEP_CLAIM_SECONDS=150          # how long one processing step may hold a document / exam
+STEP_CLAIM_SECONDS=280          # how long one processing step may hold a document / exam
 APP_PASSCODE=                   # optional; set it when the app is online (docs/DEPLOYMENT.md)
 ```
 

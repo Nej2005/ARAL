@@ -25,3 +25,6 @@ frontend/dist/
 frontend/vite.log
 backend/uvicorn.log
 frontend/tsconfig.tsbuildinfo
+
+.vercel
+.env.local

@@ -5,16 +5,18 @@ import { resolve } from "node:path";
 
 import { chromium } from "playwright";
 
-const APP = "http://localhost:5173";
+const APP = process.env.APP_URL ?? "http://localhost:5173";
+const PASSCODE = process.env.APP_PASSCODE ?? "";
 const SAMPLES = resolve("../backend/samples");
-const SHOTS = resolve("../design/screenshots");
+const SHOTS = resolve(process.env.SHOTS_DIR ?? "../design/screenshots");
 mkdirSync(SHOTS, { recursive: true });
 
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: true });
 const page = await ctx.newPage();
 const consoleErrors = [];
-page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
+let unlocked = !PASSCODE; // before the passcode is entered, 401s are expected (they trigger the sheet)
+page.on("console", (m) => { if (m.type() === "error" && (unlocked || !/401/.test(m.text()))) consoleErrors.push(m.text()); });
 page.on("pageerror", (e) => consoleErrors.push("pageerror: " + e.message));
 
 const step = (s) => console.log("•", s);
@@ -30,6 +32,13 @@ const shot = async (name) => {
 try {
   step("home");
   await page.goto(APP);
+  if (PASSCODE) {
+    await page.getByRole("dialog", { name: "Passcode" }).waitFor({ timeout: 20_000 });
+    await page.getByRole("textbox", { name: "Passcode" }).fill(PASSCODE);
+    await page.getByRole("button", { name: /unlock/i }).click();
+    unlocked = true;
+    step("passcode entered");
+  }
   await page.getByRole("heading", { name: /reviewers/i }).waitFor();
   await shot("01-home-empty");
 

@@ -127,8 +127,10 @@ def _gemini_backend(system: str, user: str, schema: type[T], label: str) -> T:
             except gerrors.APIError as e:
                 code = _status_code(e)
                 if code == 429:
-                    if attempt <= 3:
-                        delay = min(60, 8 * attempt) + random.uniform(0, 2)
+                    # Free-tier limits are per minute: wait out the window (about 100 s in total),
+                    # then move on to the fallback model. A processing step may take up to 300 s.
+                    if attempt <= 4:
+                        delay = 10 * attempt + random.uniform(0, 3)
                         log.warning("gemini 429 on %s (%s); retry in %.0fs", model, label, delay)
                         time.sleep(delay)
                         continue

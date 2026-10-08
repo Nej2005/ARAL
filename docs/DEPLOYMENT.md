@@ -1,7 +1,19 @@
 # Deploying ARAL to Vercel
 
+**Live:** https://aral-psi.vercel.app (Vercel project `aral`, database: Neon project `ARAL`, branch `production`).
+Every push to `main` on GitHub redeploys it. The passcode is in `backend/.env` as `APP_PASSCODE_VERCEL` (never committed).
+
 One Vercel project serves the React frontend as static files and the FastAPI backend as a Python
 serverless function on the same domain. Data lives in a hosted PostgreSQL (free tier is enough).
+
+## Day-to-day (CLI, already logged in on this PC)
+
+```powershell
+vercel --prod            # deploy the working copy now (a git push does this too)
+vercel env ls production # see which variables are set
+vercel logs https://aral-psi.vercel.app   # recent function logs
+neon connection-string production --project-id snowy-boat-72279711 --pooled   # the DATABASE_URL
+```
 
 ## How it fits a serverless host
 

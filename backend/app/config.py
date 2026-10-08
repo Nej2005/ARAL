@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     storage_dir: Path = Path("./storage")  # scratch space for temp files only
     max_upload_mb: int = 25
     upload_chunk_mb: int = 3  # under Vercel's 4.5 MB request limit
-    step_claim_seconds: int = 150  # how long one processing step may hold a document / exam
+    step_claim_seconds: int = 280  # how long one processing step may hold a document / exam (< Vercel's 300 s)
     max_exam_items: int = 100
     ident_fuzzy_threshold: int = 90
     soffice_path: str = "soffice"
