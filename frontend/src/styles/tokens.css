@@ -1,0 +1,62 @@
+/* Black and white only. Light = printed exam sheet, dark = monochrome terminal. (FRONTEND.md §2) */
+:root {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --fg: #000000;
+  --accent: #000000;
+  --on-accent: #ffffff;
+  --muted: #666666;
+  --rule: #d6d6d6;
+  --hatch: repeating-linear-gradient(135deg, rgba(0, 0, 0, 0.16) 0 1.5px, transparent 1.5px 6px);
+  --scan: transparent;
+  --glow-text: none;
+  --glow-box: none;
+
+  --display: "VT323", "Courier New", monospace;
+  --body: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
+  --t-xs: 11px;
+  --t-sm: 13px;
+  --t-md: 15px;
+  --t-lg: clamp(17px, 1.9vw, 21px);
+  --t-h1: clamp(40px, 7vw, 72px);
+  --gut: 16px;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #000000;
+    --surface: #0a0a0a;
+    --fg: #ffffff;
+    --accent: #ffffff;
+    --on-accent: #000000;
+    --muted: #9c9c9c;
+    --rule: #2c2c2c;
+    --hatch: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.24) 0 1.5px, transparent 1.5px 6px);
+    --scan: rgba(0, 0, 0, 0.1);
+    --glow-text: 0 0 8px rgba(255, 255, 255, 0.35);
+    --glow-box: 0 0 12px rgba(255, 255, 255, 0.12);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #000000;
+  --surface: #0a0a0a;
+  --fg: #ffffff;
+  --accent: #ffffff;
+  --on-accent: #000000;
+  --muted: #9c9c9c;
+  --rule: #2c2c2c;
+  --hatch: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.24) 0 1.5px, transparent 1.5px 6px);
+  --scan: rgba(0, 0, 0, 0.1);
+  --glow-text: 0 0 8px rgba(255, 255, 255, 0.35);
+  --glow-box: 0 0 12px rgba(255, 255, 255, 0.12);
+  color-scheme: dark;
+}
+
+@media (min-width: 700px) {
+  :root {
+    --gut: 32px;
+  }
+}

@@ -1,0 +1,26 @@
+# Secrets
+.env
+!.env.example
+
+# Local data
+backend/storage/
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Scratch
+backend/samples/exam.pdf
+backend/samples/study-sheet.pdf
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/vite.log
+backend/uvicorn.log
