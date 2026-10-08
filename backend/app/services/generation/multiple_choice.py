@@ -15,6 +15,8 @@ import random
 import re
 from itertools import combinations
 
+from rapidfuzz import fuzz
+
 from app.models import Document, SourceItem
 from app.services.fidelity import (
     BLANK,
@@ -38,8 +40,8 @@ MIN_MEANING_CHARS = 12
 
 _STOP = set("""a an the and or of to in on for with by as at from into than that this these those its it is are be
 can may will not no all any each other such which who whose what when where how your their his her our you
-folder file files folders only also used use using new one two three more most default option options called
-allow allows within user users data""".split())
+only also used use using new one two three more most default option options called
+allow allows within""".split())
 
 
 def content_words(s: str) -> set[str]:
@@ -85,11 +87,21 @@ def fill_in_stem(it) -> str | None:
     return stem
 
 
-def _safe_term_distractor(c, answer_terms: list[str], stem: str) -> bool:
+SAME_MEANING = 92
+
+
+def same_meaning(a, b) -> bool:
+    """Two entries defined (almost) word for word the same, e.g. 'Change' and 'Read/Write'."""
+    return fuzz.ratio(norm_cmp(clean_for_display(a.body)), norm_cmp(clean_for_display(b.body))) >= SAME_MEANING
+
+
+def _safe_term_distractor(c, it, answer_terms: list[str], stem: str) -> bool:
     if not c.term or poor_option(c.term):
         return False
     names = terms_of(c)
     if any(too_close(a, n) for a in answer_terms for n in names):
+        return False
+    if same_meaning(c, it):  # its definition fits the blank just as well
         return False
     return not mentions(stem, names)  # the stem must not rule it out
 
@@ -140,7 +152,7 @@ def _candidates(it, fmt: str, pool, stem, correct_text: str, rng: random.Random)
     answer_terms = terms_of(it)
     echo = echo_words(it, fmt, stem, correct_text)
     if fmt == "fill_in":
-        cands = [c for c in pool if c.id != it.id and _safe_term_distractor(c, answer_terms, stem)]
+        cands = [c for c in pool if c.id != it.id and _safe_term_distractor(c, it, answer_terms, stem)]
         texts = {c.id: capitalize_first(c.term) for c in cands}
     else:
         cands = [c for c in pool if c.id != it.id and _safe_meaning_distractor(c, it, correct_text)]

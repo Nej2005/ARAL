@@ -161,7 +161,7 @@ def test_no_option_could_also_be_right_or_is_ruled_out_by_the_stem():
     assert "User quotas" not in options(ntfsq)
     ns = build(BY_ID["ns"], fmt="fill_in")
     assert "Distributed File System" not in options(ns)
-    assert "16777216" not in options(build(BY_ID["folderq"], fmt="fill_in"))
+    assert "16777216" not in options(build(BY_ID["folderq"]))  # whichever format is hint-free
 
 
 def test_gemini_picks_outside_the_safe_list_are_ignored():
@@ -176,3 +176,20 @@ def test_identification_prompt_hides_the_term():
         assert not mentions(d.prompt, [it.term, *it.aliases]), d.prompt
     d = build_identification(Draft(ref="q", type="identification", item=BY_ID["read"], doc=DOC))
     assert d.prompt == "Allows groups or users to read and execute files."
+
+
+def test_identical_definitions_are_never_offered_together():
+    change = item("chg", "Change", "Change - Allows groups or users to read, execute, delete, and modify the contents of files, as well as add and delete subfolders.", topic="adv")
+    rw = item("rw2", "Read/Write", "Read/Write - Allows groups or users to read, execute, delete, and modify the contents of files, as well as add and delete subfolders.", topic="smb")
+    pool = ALL + [change, rw]
+    for s in range(20):
+        d = prepare_mcq(Draft(ref="q", type="mcq", item=change, doc=DOC), pool, random.Random(s))
+        if d.failed or d.mcq_format != "fill_in":
+            continue
+        assert "rw2" not in d.candidate_ids
+
+
+def test_everyday_domain_words_count_as_echoes():
+    from app.services.generation.multiple_choice import content_words
+    assert {"user", "quota"} <= content_words("User quotas")
+    assert "folder" in content_words("limit the space consumed by a folder")
