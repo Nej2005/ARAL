@@ -6,11 +6,13 @@ Tests replace `generate_structured` via `set_backend()`.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import random
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -56,6 +58,34 @@ def _throttle() -> None:
         if wait > 0:
             time.sleep(wait)
         _last_call_at = time.monotonic()
+
+
+# ---------------------------------------------------------------- step time budget
+
+# One processing step (one HTTP request) must finish well inside the host's limit (Vercel: 300 s).
+# Every Gemini call made during the step counts against the same budget.
+STEP_BUDGET_SECONDS = 240
+_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar("llm_deadline", default=None)
+
+
+@contextmanager
+def time_budget(seconds: float = STEP_BUDGET_SECONDS) -> Iterator[None]:
+    token = _deadline.set(time.monotonic() + seconds)
+    try:
+        yield
+    finally:
+        _deadline.reset(token)
+
+
+def remaining_seconds() -> float | None:
+    d = _deadline.get()
+    return None if d is None else d - time.monotonic()
+
+
+class LLMOutOfTime(LLMError):
+    """The step's time budget ran out (e.g. long rate-limit waits). Retrying the step continues the work."""
+
+    code = "LLM_BUSY"
 
 
 def _client():
@@ -118,7 +148,12 @@ def _gemini_backend(system: str, user: str, schema: type[T], label: str) -> T:
 
     # One call may wait out rate limits and overload, but must finish well inside a 300 s request.
     deadline = time.monotonic() + 230
-    quota_hit = server_busy = False
+    step_left = remaining_seconds()
+    if step_left is not None:
+        deadline = min(deadline, time.monotonic() + step_left - 10)  # keep time to save the results
+        if deadline - time.monotonic() < 15:
+            raise LLMOutOfTime("Gemini is slow right now; this step ran out of time. It will continue on retry.")
+    quota_hit = server_busy = out_of_time = False
     for model in models:
         validation_retries = 1
         attempt = 0
@@ -136,6 +171,7 @@ def _gemini_backend(system: str, user: str, schema: type[T], label: str) -> T:
                         time.sleep(delay)
                         continue
                     quota_hit = True
+                    out_of_time = out_of_time or attempt <= 4  # stopped by the clock, not by the retry limit
                     break
                 if code is not None and code >= 500:
                     # "Model overloaded" (503) usually passes within seconds; then try the fallback model.
@@ -145,6 +181,7 @@ def _gemini_backend(system: str, user: str, schema: type[T], label: str) -> T:
                         time.sleep(delay)
                         continue
                     server_busy = True
+                    out_of_time = out_of_time or attempt <= 3
                     break
                 raise LLMError(f"Gemini request failed ({code}): {e}") from e
             except LLMBlocked:
@@ -162,6 +199,8 @@ def _gemini_backend(system: str, user: str, schema: type[T], label: str) -> T:
                     log.warning("gemini returned invalid JSON for %s; retrying once", label)
                     continue
                 raise LLMError(f"Gemini returned data that did not match the schema: {e}") from e
+    if out_of_time and remaining_seconds() is not None:
+        raise LLMOutOfTime("Gemini is busy right now; this step ran out of time. It will continue on retry.")
     if server_busy:
         raise LLMError("Gemini is overloaded right now. Try again in a few minutes.")
     if quota_hit:

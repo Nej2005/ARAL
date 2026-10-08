@@ -8,6 +8,7 @@ import random
 from sqlalchemy.orm import Session
 
 from app.models import Document, Exam, Question, Reviewer, SourceItem
+from app.services import llm
 from app.services.coverage import active_items, used_item_ids
 from app.services.fidelity import LessonIndex, check_rationale, norm_cmp, rationale_fallback
 from app.services.generation import Draft, TYPE_ORDER
@@ -117,7 +118,8 @@ def build_exam(db: Session, exam: Exam, rng: random.Random | None = None) -> Non
     failed = [d for d in drafts if d.failed]
     for d in failed:
         log.info("question failed fidelity (%s): type=%s term=%r", d.failed, d.type, (d.item.term or "")[:50])
-    if failed and spare:
+    left = llm.remaining_seconds()
+    if failed and spare and (left is None or left > 100):  # the rebuild round needs another Gemini call
         log.info("rebuilding %d failed questions with spare items", len(failed))
         rng.shuffle(spare)
         replacements: list[tuple[str, SourceItem]] = []

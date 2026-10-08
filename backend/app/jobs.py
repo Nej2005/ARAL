@@ -102,7 +102,8 @@ def document_step(db: Session, doc: Document) -> Document:
         doc.status = "extracting"
         doc.error_code = doc.error_message = None
         db.commit()
-        done = _run_step(db, doc)
+        with llm.time_budget():
+            done = _run_step(db, doc)
         if done:
             n_items = sum(1 for i in doc.items if i.superseded_at is None)
             if n_items == 0:
@@ -111,6 +112,9 @@ def document_step(db: Session, doc: Document) -> Document:
         db.commit()
     except IngestError as e:
         _fail(db, doc, e.code, str(e))
+    except llm.LLMOutOfTime as e:
+        db.rollback()
+        log.warning("document %s: %s", doc.id, e)
     except llm.LLMError as e:
         _fail(db, doc, e.code, str(e))
     except Exception as e:  # noqa: BLE001 - step boundary
@@ -210,7 +214,8 @@ def exam_step(db: Session, exam: Exam) -> Exam:
     if exam.status != "generating" or not _claim(db, exam):
         return exam
     try:
-        build_exam(db, exam)
+        with llm.time_budget():
+            build_exam(db, exam)
         if exam.actual_count == 0:
             raise llm.LLMError("No question passed the wording checks. Try again.")
         exam.status = "ready"
@@ -220,6 +225,9 @@ def exam_step(db: Session, exam: Exam) -> Exam:
         _fail(db, exam, "ALL_ITEMS_REVIEWED", "Every item in this scope has been part of an exam.")
         exam.actual_count = 0
         db.commit()
+    except llm.LLMOutOfTime as e:
+        db.rollback()
+        log.warning("exam %s: %s", exam.id, e)
     except llm.LLMError as e:
         _fail(db, exam, e.code, str(e))
     except Exception as e:  # noqa: BLE001

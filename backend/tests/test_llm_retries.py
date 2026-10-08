@@ -52,3 +52,33 @@ def test_400_fails_fast(monkeypatch):
     with pytest.raises(llm.LLMError):
         llm._gemini_backend("s", "u", P, "t")
     assert calls == ["main"]
+
+
+def test_step_budget_caps_waiting_and_is_retryable(monkeypatch):
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+    def sleep(s):
+        clock["t"] += s
+    calls = run(monkeypatch, [429] * 20)
+    monkeypatch.setattr(time, "sleep", sleep)
+    with llm.time_budget(60):
+        with pytest.raises(llm.LLMOutOfTime):
+            llm._gemini_backend("s", "u", P, "t")
+    assert clock["t"] - 1000.0 < 60  # never waits past the step budget
+    with llm.time_budget(10):  # almost nothing left: don't even start a call
+        n = len(calls)
+        with pytest.raises(llm.LLMOutOfTime):
+            llm._gemini_backend("s", "u", P, "t")
+        assert len(calls) == n
+
+
+def test_out_of_time_leaves_the_exam_generating(client, fixture_files, fake_llm):
+    from tests.conftest import API, upload
+    d = upload(client, fixture_files["pdf"])
+    r = client.post(f"{API}/reviewers", json={"title": "T", "document_ids": [d["id"]]}).json()
+    e = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["mcq"], "count": 3}).json()
+    fake_llm.fail_with = llm.LLMOutOfTime("slow")
+    out = client.post(f"{API}/exams/{e['id']}/process").json()
+    assert out["status"] == "generating" and out["busy"] is False  # not failed, claim released
+    fake_llm.fail_with = None
+    assert client.post(f"{API}/exams/{e['id']}/process").json()["status"] == "ready"
