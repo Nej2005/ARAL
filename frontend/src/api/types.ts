@@ -13,7 +13,7 @@ export interface DocumentSummary {
   file_type: "pdf" | "pptx" | "ppt";
   status: DocStatus;
   page_count: number;
-  page_unit: "page" | "slide";
+  page_unit: "page" | "slide" | "section";
   item_count: number;
   reviewer_ids: string[];
   created_at: string | null;
@@ -54,7 +54,7 @@ export interface ReviewerDoc {
   steps_total: number | null;
   error_code: string | null;
   page_count: number;
-  page_unit: "page" | "slide";
+  page_unit: "page" | "slide" | "section";
   item_count: number;
   used_items: number;
   exam_count: number;
@@ -103,7 +103,7 @@ export interface Outline {
     filename: string;
     status: DocStatus;
     page_count: number;
-    page_unit: "page" | "slide";
+    page_unit: "page" | "slide" | "section";
     pages: { page_no: number; title: string | null; item_count: number }[];
   }[];
   topics: { topic: string; topic_key: string; item_count: number; unused_count: number }[];

@@ -12,6 +12,8 @@ The answer must never show through. So:
 from __future__ import annotations
 
 import random
+import re
+from itertools import combinations
 
 from app.models import Document, SourceItem
 from app.services.fidelity import (
@@ -21,6 +23,7 @@ from app.services.fidelity import (
     check_fill_in_stem,
     check_option_is_lesson_text,
     clean_for_display,
+    implied_aliases,
     mask_terms,
     mentions,
     norm_cmp,
@@ -33,9 +36,33 @@ from app.services.generation import Draft, source_ref
 
 MIN_MEANING_CHARS = 12
 
+_STOP = set("""a an the and or of to in on for with by as at from into than that this these those its it is are be
+can may will not no all any each other such which who whose what when where how your their his her our you
+folder file files folders only also used use using new one two three more most default option options called
+allow allows within user users data""".split())
+
+
+def content_words(s: str) -> set[str]:
+    """Meaningful words, singular-ish, for spotting a word the question echoes from the answer."""
+    out = set()
+    for w in re.findall(r"[a-z0-9]+", norm_cmp(s)):
+        if len(w) < 3 or w in _STOP:
+            continue
+        for suffix in ("ing", "ed", "es", "s"):  # "indexing" ~ "index", "screens" ~ "screen"
+            if w.endswith(suffix) and len(w) - len(suffix) >= 4:
+                w = w[: -len(suffix)]
+                break
+        out.add(w)
+    return out
+
 
 def terms_of(it) -> list[str]:
-    return [t for t in [it.term, *(it.aliases or [])] if t]
+    """The answer and every other way the lesson names it (aliases, 'Name (ABBR)' parts)."""
+    out: list[str] = []
+    for t in [it.term, *(it.aliases or []), *implied_aliases(it.term)]:
+        if t and t.casefold() not in {x.casefold() for x in out}:
+            out.append(t)
+    return out
 
 
 def meaning_text(it) -> str:
@@ -44,8 +71,15 @@ def meaning_text(it) -> str:
     return capitalize_first(mask_terms(body, terms_of(it)).strip())
 
 
+def stem_source(it) -> str:
+    """The sentence shown with a blank. A definition written as several bullets reads as 'Term – a; b; c.'"""
+    if "\n" in it.source_quote.strip():
+        return f"{it.term} – {it.body}"
+    return clean_for_display(it.source_quote)
+
+
 def fill_in_stem(it) -> str | None:
-    stem = mask_terms(clean_for_display(it.source_quote), terms_of(it))
+    stem = mask_terms(stem_source(it), terms_of(it))
     if BLANK not in stem or visible_chars(stem) < 8:
         return None
     return stem
@@ -73,8 +107,76 @@ def _safe_meaning_distractor(c, it, correct_text: str) -> bool:
     return norm_cmp(text) != norm_cmp(correct_text) and not too_close(text, correct_text)
 
 
-def prepare_mcq(d: Draft, pool: list[SourceItem], rng: random.Random) -> Draft:
-    """Pick the stem format and the safe candidate distractors. Gemini picks among them later."""
+MAX_LEN_RATIO = 2.2
+
+
+def echo_words(it, fmt: str, stem, correct_text: str) -> set:
+    """Words of the answer that the question shows: they must not single out the right option."""
+    shown = (stem or "") if fmt == "fill_in" else correct_text
+    return content_words(it.term) & content_words(shown.replace(BLANK, " "))
+
+
+def option_set_ok(correct: str, distractor_texts: list, echo: set) -> bool:
+    """No echo word only in the right option (each must be in >= 2 wrong ones), no length outlier."""
+    for w in echo:
+        if sum(1 for t in distractor_texts if w in content_words(t)) < 2:
+            return False
+    n = len(correct)
+    ls = [len(t) for t in distractor_texts]
+    return not (n > MAX_LEN_RATIO * max(ls) or n * MAX_LEN_RATIO < min(ls))
+
+
+def choose_distractors(correct: str, ordered: list, echo: set, limit: int = 16):
+    """First set of 3 (in preference order) that gives nothing away. `ordered` = [(id, text)]."""
+    pool = ordered[:limit]
+    for trio in combinations(pool, 3):
+        if option_set_ok(correct, [t for _, t in trio], echo):
+            return list(trio)
+    return None
+
+
+def _candidates(it, fmt: str, pool, stem, correct_text: str, rng: random.Random):
+    """Safe candidates for one format, best first. Returns ([(item, option text)], echo words)."""
+    answer_terms = terms_of(it)
+    echo = echo_words(it, fmt, stem, correct_text)
+    if fmt == "fill_in":
+        cands = [c for c in pool if c.id != it.id and _safe_term_distractor(c, answer_terms, stem)]
+        texts = {c.id: capitalize_first(c.term) for c in cands}
+    else:
+        cands = [c for c in pool if c.id != it.id and _safe_meaning_distractor(c, it, correct_text)]
+        texts = {c.id: meaning_text(c) for c in cands}
+    length = max(1, len(correct_text))
+
+    def rank(c):
+        t = texts[c.id]
+        covers = len(echo & content_words(t))
+        ratio = max(len(t), length) / max(1, min(len(t), length))
+        same_topic = bool(it.topic_key and c.topic_key == it.topic_key)
+        return (-covers, ratio > MAX_LEN_RATIO, not same_topic, c.kind != it.kind, round(ratio, 1), rng.random())
+
+    seen = {norm_cmp(correct_text)}
+    out = []
+    for c in sorted(cands, key=rank):
+        key = norm_cmp(texts[c.id])
+        if key not in seen:
+            seen.add(key)
+            out.append((c, texts[c.id]))
+    # An option with a blank in it stands out next to options without one: avoid it when we can.
+    if BLANK not in correct_text:
+        plain = [x for x in out if BLANK not in x[1]]
+        if len(plain) >= 3:
+            out = plain
+    return out[:40], echo
+
+
+def _has_twin(it, pool) -> bool:
+    """Another item with the same name but a different meaning (e.g. 'Read' in two permission lists)."""
+    return any(c.id != it.id and c.term and norm_cmp(c.term) == norm_cmp(it.term)
+               and norm_cmp(c.body) != norm_cmp(it.body) for c in pool)
+
+
+def prepare_mcq(d: Draft, pool: list, rng: random.Random) -> Draft:
+    """Pick a stem format whose options can be hint-free, plus the safe candidates. Gemini picks among them later."""
     it = d.item
     if not it.term:
         d.failed = "mcq_no_format"
@@ -82,54 +184,38 @@ def prepare_mcq(d: Draft, pool: list[SourceItem], rng: random.Random) -> Draft:
     answer_terms = terms_of(it)
     stem = fill_in_stem(it)
     correct_meaning = meaning_text(it) if it.kind == "definition" else ""
-    can_fill = stem is not None
-    can_meaning = (it.kind == "definition" and visible_chars(correct_meaning) >= MIN_MEANING_CHARS
-                   and not mentions(correct_meaning, answer_terms))
-    if can_fill and can_meaning:
-        fmt = rng.choice(["fill_in", "term_meaning"])
-    elif can_fill:
-        fmt = "fill_in"
-    elif can_meaning:
-        fmt = "term_meaning"
-    else:
+    formats = []
+    if stem is not None and not poor_option(it.term):  # numbers / long phrases stand out as answers
+        formats.append("fill_in")
+    if (it.kind == "definition" and visible_chars(correct_meaning) >= MIN_MEANING_CHARS
+            and not mentions(correct_meaning, answer_terms)):
+        formats.append("term_meaning")
+    if not formats:
         d.failed = "mcq_no_format"
         return d
-    d.mcq_format = fmt
+    rng.shuffle(formats)
 
+    chosen = None
+    for fmt in formats:
+        correct_text = capitalize_first(it.term) if fmt == "fill_in" else correct_meaning
+        ranked, echo = _candidates(it, fmt, pool, stem, correct_text, rng)
+        if choose_distractors(correct_text, [(c.id, t) for c, t in ranked], echo):
+            chosen = (fmt, correct_text, ranked, echo)
+            break
+    if chosen is None:
+        d.failed = "mcq_hint_unavoidable"
+        return d
+    fmt, correct_text, ranked, echo = chosen
+    d.mcq_format = fmt
     if fmt == "fill_in":
         d.prompt = stem
-        correct_text = capitalize_first(it.term)
-        cands = [c for c in pool if c.id != it.id and _safe_term_distractor(c, answer_terms, stem)]
-        texts = {c.id: capitalize_first(c.term) for c in cands}
-        words = len(it.term.split())
-        rank = lambda c: (c.kind != it.kind, not (it.topic_key and c.topic_key == it.topic_key),  # noqa: E731
-                          abs(len(c.term.split()) - words), rng.random())
     else:
-        d.prompt = f"Which of the following best describes **{it.term}**?"
-        correct_text = correct_meaning
-        cands = [c for c in pool if c.id != it.id and _safe_meaning_distractor(c, it, correct_text)]
-        texts = {c.id: meaning_text(c) for c in cands}
-        length = len(correct_text)
-        rank = lambda c: (not (it.topic_key and c.topic_key == it.topic_key),  # noqa: E731
-                          abs(len(texts[c.id]) - length) // 40, rng.random())
-
-    # Drop candidates whose option text repeats another candidate's.
-    seen = {norm_cmp(correct_text)}
-    unique = []
-    for c in sorted(cands, key=rank):
-        key = norm_cmp(texts[c.id])
-        if key not in seen:
-            seen.add(key)
-            unique.append(c)
-    # An option with a blank in it stands out next to options without one: avoid it when we can.
-    if BLANK not in correct_text:
-        plain = [c for c in unique if BLANK not in texts[c.id]]
-        if len(plain) >= 3:
-            unique = plain
-    unique = unique[:40]
-    d.candidate_ids = [c.id for c in unique]
-    d.candidate_texts = {c.id: texts[c.id] for c in unique}
-    d.needs_generated = max(0, 3 - len(unique))
+        context = f" ({it.topic})" if it.topic and _has_twin(it, pool) else ""
+        d.prompt = f"Which of the following best describes **{it.term}**{context}?"
+    d.candidate_ids = [c.id for c, _ in ranked]
+    d.candidate_texts = {c.id: t for c, t in ranked}
+    d.echo_words = sorted(echo)
+    d.needs_generated = 0
     d.choices = [{"id": "c1", "text": correct_text, "source_item_id": it.id}]
     d.correct_answer = "c1"
     d.explanation = {"source_quote": it.source_quote, "document_id": it.document_id, "page_no": it.page_no,
@@ -144,65 +230,41 @@ def _feedback_for(c, fmt: str, doc: Document) -> str:
     return f"That describes {c.term} ({where})."
 
 
-def finish_mcq(d: Draft, picked_ids: list[str], generated: list[tuple[str, str]], by_id: dict[str, SourceItem],
-               docs: dict[str, Document], index: LessonIndex, rng: random.Random) -> Draft:
-    """Attach 3 distractors (lesson items by id, or generated text) and build choice feedback."""
+def finish_mcq(d: Draft, picked_ids: list, generated: list, by_id: dict,
+               docs: dict, index: LessonIndex, rng: random.Random) -> Draft:
+    """Attach 3 distractors and their feedback. Gemini's picks come first, but the set must give nothing away."""
     it = d.item
-    distractors: list[dict] = []
-    feedback: dict[str, str] = {}
-    seen = {norm_cmp(d.choices[0]["text"])}
-
-    def add(c) -> None:
-        text = d.candidate_texts.get(c.id)
-        if not text or norm_cmp(text) in seen:
-            return
-        seen.add(norm_cmp(text))
-        cid = f"c{len(distractors) + 2}"
+    correct = d.choices[0]["text"]
+    order: list = []
+    for sid in [*picked_ids, *d.candidate_ids]:
+        if sid in d.candidate_texts and sid in by_id and sid not in order:
+            order.append(sid)
+    trio = choose_distractors(correct, [(sid, d.candidate_texts[sid]) for sid in order], set(d.echo_words))
+    if trio is None:
+        d.failed = "mcq_hint_unavoidable"
+        return d
+    distractors, feedback = [], {}
+    for k, (sid, text) in enumerate(trio):
+        c = by_id[sid]
+        cid = f"c{k + 2}"
         distractors.append({"id": cid, "text": text, "source_item_id": c.id})
         feedback[cid] = _feedback_for(c, d.mcq_format, docs[c.document_id])
-
-    for sid in picked_ids:  # Gemini's picks, but only from the safe candidate list
-        if len(distractors) == 3:
-            break
-        if sid in d.candidate_texts and sid in by_id:
-            add(by_id[sid])
-    for sid in d.candidate_ids:  # top up in ranked order
-        if len(distractors) == 3:
-            break
-        if sid in by_id:
-            add(by_id[sid])
-    if len(distractors) < 3 and generated:
-        answer_terms = terms_of(it)
-        for text, why in generated:
-            if len(distractors) == 3:
-                break
-            text = capitalize_first(normalize_option(text))
-            if (not text or norm_cmp(text) in seen or poor_option(text, 6 if d.mcq_format == "fill_in" else 60)
-                    or any(too_close(a, text) for a in answer_terms) or mentions(d.prompt, [text])
-                    or (d.mcq_format == "term_meaning" and mentions(text, answer_terms))):
-                continue
-            seen.add(norm_cmp(text))
-            cid = f"c{len(distractors) + 2}"
-            distractors.append({"id": cid, "text": text, "source_item_id": None})
-            feedback[cid] = why or f"{text} is not what the lesson says here."
-            d.explanation["generated_distractors"] = True
-    if len(distractors) < 3:
-        d.failed = "mcq_not_enough_distractors"
-        return d
     d.choices = [d.choices[0], *distractors]
     d.choice_feedback = feedback
 
-    # Fidelity (§9) and the no-giveaway rules.
+    # Fidelity (§9) and the no-giveaway rules, checked once more on the final question.
     answer_terms = terms_of(it)
     if d.mcq_format == "fill_in":
-        if not check_fill_in_stem(d.prompt, it.source_quote, it.term or ""):
+        if not check_fill_in_stem(d.prompt, it.source_quote + "\n" + stem_source(it), it.term or ""):
             d.failed = "mcq_stem"
         elif mentions(d.prompt, answer_terms):
             d.failed = "mcq_stem_reveals_answer"
-    elif mentions(d.choices[0]["text"], answer_terms):
+        elif any(mentions(d.prompt, [x["text"]]) for x in distractors):
+            d.failed = "mcq_stem_names_option"
+    elif mentions(correct, answer_terms):
         d.failed = "mcq_option_reveals_answer"
     for ch in d.choices:
-        if ch["source_item_id"] is not None and not check_option_is_lesson_text(ch["text"], index.text_norm):
+        if not check_option_is_lesson_text(ch["text"], index.text_norm):
             d.failed = "mcq_option_not_lesson_text"
     return d
 

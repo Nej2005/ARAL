@@ -19,10 +19,11 @@ from app.models import Document, DocumentPage, Exam, utcnow
 from app.services import llm, storage
 from app.services.generation.exam_builder import NothingToSelect, build_exam
 from app.services.ingestion.dedupe import text_sha256
+from app.services.ingestion.markdown import read_markdown
 from app.services.ingestion.pdf import extract_pdf
 from app.services.ingestion.ppt_convert import PptConversionFailed, PptConversionUnavailable, convert_ppt_to_pptx
 from app.services.ingestion.pptx import extract_pptx
-from app.services.knowledge import EXTRACTION_VERSION, copy_items, extract_next_window, window_count
+from app.services.knowledge import EXTRACTION_VERSION, copy_items, extract_next_window, import_glossary, window_count
 
 log = logging.getLogger("aral.jobs")
 
@@ -130,11 +131,14 @@ def _fail(db: Session, obj: Document | Exam, code: str, message: str) -> None:
 
 
 def _read_pages(db: Session, doc: Document):
+    """Returns (pages, glossary). `glossary` is the list of term entries for Markdown/text term lists."""
     with storage.materialized(db, doc) as path:
+        if doc.file_type in ("md", "txt"):
+            return read_markdown(path)
         if doc.file_type == "pdf":
-            return extract_pdf(path)
+            return extract_pdf(path), None
         if doc.file_type == "pptx":
-            return extract_pptx(path)
+            return extract_pptx(path), None
         if doc.file_type == "ppt":
             try:
                 pptx_path = convert_ppt_to_pptx(path)
@@ -142,8 +146,11 @@ def _read_pages(db: Session, doc: Document):
                 raise IngestError("PPT_CONVERSION_UNAVAILABLE", str(e)) from e
             except PptConversionFailed as e:
                 raise IngestError("PPT_CONVERSION_FAILED", str(e)) from e
-            return extract_pptx(pptx_path)
+            return extract_pptx(pptx_path), None
     raise IngestError("UNSUPPORTED_FILE_TYPE", f"Unsupported file type: {doc.file_type}")
+
+
+GLOSSARY_MIN_TERMS = 3
 
 
 def _run_step(db: Session, doc: Document) -> bool:
@@ -153,7 +160,7 @@ def _run_step(db: Session, doc: Document) -> bool:
         # Step A: read the file into pages (fast, no Gemini).
         if not storage.has_file(db, doc):
             raise IngestError("FILE_MISSING", "The uploaded file is no longer stored. Upload it again.")
-        pages = _read_pages(db, doc)
+        pages, glossary = _read_pages(db, doc)
         total_chars = sum(len((p.text or "").strip()) for p in pages)
         if total_chars < MIN_TEXT_CHARS:
             raise IngestError("NO_EXTRACTABLE_TEXT",
@@ -181,6 +188,14 @@ def _run_step(db: Session, doc: Document) -> bool:
             doc.extraction_progress = window_count(doc)
             db.commit()
             log.info("copied %d items from %s to %s (same text)", n, twin.id, doc.id)
+            return True
+
+        # A term list ("**Term** - definition" bullets) is read word for word, without Gemini.
+        if glossary and len(glossary) >= GLOSSARY_MIN_TERMS:
+            n = import_glossary(db, doc, glossary)
+            doc.extraction_progress = window_count(doc)
+            db.commit()
+            log.info("imported %d terms from %s without Gemini", n, doc.filename)
             return True
         return False
 

@@ -109,7 +109,7 @@ export default function NewExam({ reviewer, onClose }: { reviewer: ReviewerDetai
                 <input type="checkbox" id={`sf-${d.id}`} checked={f.on} onChange={(e) => setFile(d.id, { on: e.target.checked })} />
                 <label htmlFor={`sf-${d.id}`}>{d.filename}</label>
                 <div className="range">
-                  {d.page_unit === "slide" ? "Slides" : "Pages"}
+                  {d.page_unit === "slide" ? "Slides" : d.page_unit === "section" ? "Sections" : "Pages"}
                   <input inputMode="numeric" placeholder="1" value={f.from} onChange={(e) => setFile(d.id, { from: e.target.value.replace(/\D/g, "") })} aria-label="From" />
                   –
                   <input inputMode="numeric" placeholder={String(d.page_count)} value={f.to} onChange={(e) => setFile(d.id, { to: e.target.value.replace(/\D/g, "") })} aria-label="To" />

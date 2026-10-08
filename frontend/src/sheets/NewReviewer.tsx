@@ -100,9 +100,9 @@ export default function NewReviewer({ onClose }: { onClose: () => void }) {
       >
         <Icon name="up" />
         <b>Add files</b>
-        <span className="muted" style={{ fontSize: 12 }}>PDF · PPTX · PPT</span>
+        <span className="muted" style={{ fontSize: 12 }}>PDF · PPTX · PPT · MD</span>
       </button>
-      <input ref={input} type="file" accept=".pdf,.pptx,.ppt" multiple hidden onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+      <input ref={input} type="file" accept=".pdf,.pptx,.ppt,.md,.txt" multiple hidden onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
       {rows.length > 0 && (
         <div>
           {rows.map((r) => (

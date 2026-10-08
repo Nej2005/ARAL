@@ -35,7 +35,7 @@ class Document(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     owner_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     filename: Mapped[str] = mapped_column(Text)
-    file_type: Mapped[str] = mapped_column(String(8))  # pdf | pptx | ppt
+    file_type: Mapped[str] = mapped_column(String(8))  # pdf | pptx | ppt | md | txt
     storage_path: Mapped[str] = mapped_column(Text)
     sha256: Mapped[str] = mapped_column(String(64), index=True)
     text_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
@@ -68,10 +68,15 @@ class Document(Base):
 
     @property
     def page_unit(self) -> str:
-        return "slide" if self.file_type in ("pptx", "ppt") else "page"
+        if self.file_type in ("pptx", "ppt"):
+            return "slide"
+        if self.file_type in ("md", "txt"):
+            return "section"
+        return "page"
 
     def page_label(self, page_no: int) -> str:
-        return f"slide {page_no}" if self.page_unit == "slide" else f"p. {page_no}"
+        unit = self.page_unit
+        return f"slide {page_no}" if unit == "slide" else f"section {page_no}" if unit == "section" else f"p. {page_no}"
 
 
 class DocumentFile(Base):

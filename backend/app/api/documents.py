@@ -19,13 +19,13 @@ from app.services.knowledge import EXTRACTION_VERSION, supersede_items, window_c
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
-ALLOWED = {"pdf", "pptx", "ppt"}
+ALLOWED = {"pdf", "pptx", "ppt", "md", "txt"}
 
 
 def file_type_of(filename: str) -> str:
     ext = Path(filename or "").suffix.lower().lstrip(".")
     if ext not in ALLOWED:
-        raise AppError(400, "UNSUPPORTED_FILE_TYPE", "Only PDF, PPTX and PPT files can be used.", filename=filename)
+        raise AppError(400, "UNSUPPORTED_FILE_TYPE", "Only PDF, PPTX, PPT, MD and TXT files can be used.", filename=filename)
     return ext
 
 
@@ -124,7 +124,7 @@ async def upload_document(
         if len(data) > settings.max_upload_bytes:
             raise AppError(413, "FILE_TOO_LARGE", f"This file is over {settings.max_upload_mb} MB.")
     data = bytes(data)
-    if not data or not storage.looks_like(file_type, data[:8]):
+    if not data or not storage.looks_like(file_type, data):
         raise AppError(400, "UNSUPPORTED_FILE_TYPE", f"This file does not look like a {file_type.upper()} file.",
                        filename=file.filename)
     digest = storage.sha256_bytes(data)

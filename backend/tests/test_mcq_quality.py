@@ -59,14 +59,16 @@ BY_ID = {i.id: i for i in ALL}
 
 
 def build(it, fmt=None, picks=None, seed=1):
-    rng = random.Random(seed)
-    for _ in range(50):  # force a given stem format when asked
+    """Build a question; with `fmt`, retry other shuffles until that format is used (it may switch to avoid a hint)."""
+    for s in range(seed, seed + 60):
+        rng = random.Random(s)
         d = prepare_mcq(Draft(ref="q1", type="mcq", item=it, doc=DOC), ALL, rng)
-        if fmt is None or d.mcq_format == fmt or d.failed:
-            break
-    assert not d.failed, d.failed
-    finish_mcq(d, picks or [], [], BY_ID, {"d1": DOC}, LessonIndex.build(ALL), rng)
-    return d
+        if d.failed or (fmt and d.mcq_format != fmt):
+            continue
+        finish_mcq(d, picks or [], [], BY_ID, {"d1": DOC}, LessonIndex.build(ALL), rng)
+        if not d.failed:
+            return d
+    raise AssertionError(f"no {fmt or 'any'} question could be built for {it.term!r}")
 
 
 def options(d):
@@ -91,6 +93,16 @@ def test_mask_terms_hides_every_mention_and_the_article():
     assert out.startswith(BLANK + " – Originally")  # "SMB (Server Message Block)" folds into one blank
     assert mask_terms("must have an owner, which", ["owner"]) == f"must have a(n) {BLANK}, which"
     assert mask_terms("Stomata let gas in; each stoma is a pore", ["Stomata", "stoma"]).count(BLANK) == 2
+
+
+def test_implied_aliases_and_case_rules():
+    from app.services.fidelity import implied_aliases
+    assert implied_aliases("Server Message Block (SMB)") == ["Server Message Block", "SMB"]
+    assert implied_aliases("Enable access-based enumeration") == ["access-based enumeration"]
+    assert implied_aliases("Read") == []
+    assert mask_terms("Allows users to read files", ["Read"]) == "Allows users to read files"  # verb kept
+    assert mask_terms("assigned to the owner of the folder", ["Owner"]) == f"assigned to the {BLANK} of the folder"
+    assert mask_terms("Originally developed by IBM, SMB is", ["Server Message Block (SMB)", "SMB"]).count("SMB") == 0
 
 
 def test_too_close_and_poor_options():
@@ -125,7 +137,8 @@ def test_fill_in_stem_hides_answer_and_aliases():
     d = build(BY_ID["own"], fmt="fill_in")
     assert "a(n) " + BLANK in d.prompt and " an " + BLANK not in d.prompt
     assert options(d)[0] == "Owner"  # capitalized like every other option
-    assert all(o[0].isupper() or o[0].isdigit() for o in options(d))
+    # capitalized, except names that have their own casing (exFAT)
+    assert all(o[0].isupper() or o[0].isdigit() or any(ch.isupper() for ch in o.split()[0][1:]) for o in options(d))
 
 
 def test_no_option_could_also_be_right_or_is_ruled_out_by_the_stem():

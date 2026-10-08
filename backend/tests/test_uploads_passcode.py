@@ -56,7 +56,7 @@ def test_chunked_upload_detects_corruption_and_missing_chunks(client, fixture_fi
     assert inc.status_code == 409 and inc.json()["error"]["code"] == "UPLOAD_INCOMPLETE"
     wrong = client.put(f"{API}/uploads/{start['upload_id']}/chunks/1", content=b"short")
     assert wrong.status_code == 400 and wrong.json()["error"]["code"] == "BAD_CHUNK"
-    assert client.post(f"{API}/uploads", json={"filename": "x.txt", "size": 10, "sha256": "a" * 64}).json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+    assert client.post(f"{API}/uploads", json={"filename": "x.docx", "size": 10, "sha256": "a" * 64}).json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
     assert client.post(f"{API}/uploads", json={"filename": "x.pdf", "size": 10 ** 9, "sha256": "a" * 64}).json()["error"]["code"] == "FILE_TOO_LARGE"
 
 

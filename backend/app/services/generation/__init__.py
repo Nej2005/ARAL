@@ -27,6 +27,7 @@ class Draft:
     mcq_format: str | None = None  # "fill_in" | "term_meaning"
     candidate_ids: list[str] = field(default_factory=list)
     candidate_texts: dict[str, str] = field(default_factory=dict)  # option text shown for each candidate
+    echo_words: list[str] = field(default_factory=list)  # answer words the question shows (must not single it out)
     needs_generated: int = 0
     failed: str | None = None
 

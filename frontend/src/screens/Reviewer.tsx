@@ -151,7 +151,7 @@ export default function Reviewer() {
                   <input
                     ref={fileInput}
                     type="file"
-                    accept=".pdf,.pptx,.ppt"
+                    accept=".pdf,.pptx,.ppt,.md,.txt"
                     multiple
                     hidden
                     onChange={(e) => {

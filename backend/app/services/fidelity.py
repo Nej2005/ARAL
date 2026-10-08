@@ -230,13 +230,37 @@ def blank_term(text: str, term: str) -> str | None:
     return text[: m.start()] + BLANK + text[m.end() :]
 
 
-def _case_sensitive(term: str) -> bool:
-    """Short capitalized names (Read, Change, Owner) are also everyday words: match only as the name.
+_EVERYDAY_WORDS = set("""read write change modify delete list execute create take allow deny share copy move open run
+full control view add remove append traverse""".split())
 
-    Otherwise "Allows users to read files" would be masked for the term "Read".
+
+def _case_sensitive(term: str) -> bool:
+    """Names that are also everyday verbs (Read, Write, Change) match only when capitalized as the name.
+
+    Otherwise "Allows users to read files" would be masked for the term "Read". Other names ("Owner")
+    are masked in any case, so "assigned to the owner" doesn't give the answer away.
     """
     t = normalize_ws(term)
-    return " " not in t and len(t) <= 6 and t[:1].isupper() and t[1:].islower()
+    return " " not in t and t[:1].isupper() and t[1:].islower() and t.casefold() in _EVERYDAY_WORDS
+
+
+_ABBREV = re.compile(r"^(?P<name>.+?)\s*\((?P<abbr>[A-Za-z][A-Za-z0-9]{1,9})\)$")
+_LEADING_VERB = re.compile(r"^(?:enable|disable|allow|encrypt|use|select|create|configure)\s+(?P<rest>\S+(?:\s+\S+)+)$",
+                           re.IGNORECASE)
+
+
+def implied_aliases(term: str) -> list[str]:
+    """Other ways the text names the same thing: 'Server Message Block (SMB)' -> name and 'SMB';
+    'Enable access-based enumeration' -> 'access-based enumeration'."""
+    t = normalize_ws(term or "")
+    out: list[str] = []
+    m = _ABBREV.match(t)
+    if m:
+        out += [m.group("name").strip(), m.group("abbr")]
+    m = _LEADING_VERB.match(t)
+    if m:
+        out.append(m.group("rest"))
+    return [a for a in out if a and a.casefold() != t.casefold()]
 
 
 def _term_regex(term: str) -> re.Pattern:
@@ -283,7 +307,13 @@ def strip_term_prefix(text: str, terms) -> str:
 
 
 def capitalize_first(s: str) -> str:
-    return s[:1].upper() + s[1:] if s else s
+    """'owner' -> 'Owner', but names with their own casing stay as written ('exFAT', 'iSCSI')."""
+    if not s or not s[:1].islower():
+        return s
+    first_word = s.split(" ", 1)[0]
+    if any(ch.isupper() for ch in first_word[1:]):
+        return s
+    return s[:1].upper() + s[1:]
 
 
 def visible_chars(s: str) -> int:

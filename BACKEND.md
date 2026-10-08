@@ -9,7 +9,7 @@ The frontend is designed later. This document defines everything the frontend wi
 
 | # | Requirement | Where it is handled |
 |---|---|---|
-| R1 | Upload a **PDF** or **PowerPoint** (`.pptx`, `.ppt`) lesson file | §5 Ingestion |
+| R1 | Upload a **PDF** or **PowerPoint** (`.pptx`, `.ppt`) lesson file, or a **Markdown/text term list** (`.md`, `.txt`) | §5 Ingestion |
 | R2 | User picks the question type(s): **Multiple Choice**, **True or False**, **Identification** (definition → term) | §8 Generation |
 | R3 | Questions must come from the lesson material, and their wording must stay **close to the original text** | §6 Source items, §9 Fidelity rules |
 | R4 | User picks **how many items** the exam has | §8.1 Selection |
@@ -257,6 +257,7 @@ the items used in a reviewer are the distinct `questions.source_item_id` of that
 ### 5.2 Extraction rules — keep the original formatting
 - **PDF:** use `page.get_text("text", sort=True)` per page. Keep line breaks. Join words hyphenated across a line break (`infor-\nmation` → `information`). Drop the page headers and footers that repeat on more than 50% of the pages.
 - **PPTX:** for each slide, put the title first, then the text frames in reading order (top → bottom, left → right). Keep bullet levels as indentation (`"  " * level + "• "`). Write tables row by row as `cell | cell | cell`, so two-column term | meaning tables can be read as definitions. Ignore speaker notes in the MVP; they can be added later behind a flag.
+- **Markdown / text (`.md`, `.txt`):** every `##`/`###` heading starts a section (its title is the topic). A term list — bullets like `- **Term** - definition`, or `- **Term**` with sub-bullets — is imported **word for word without Gemini**: one definition item per term, `A / B` entries split into two, `Applies to:` sub-bullets ignored, and `Name (ABBR)` gives both forms as aliases. Other text goes through the normal Gemini extraction.
 - **PPT:** run `soffice --headless --convert-to pptx` into a temp folder, then use the PPTX path. If LibreOffice is missing, fail with `PPT_CONVERSION_UNAVAILABLE`.
 - Store the text **as extracted**. Normalization (lowercasing, collapsing whitespace) is applied **only inside comparisons**, never to the stored text.
 
@@ -403,7 +404,9 @@ Input: `reviewer_id`, `types` (1–3 types), `count`, optional `scope`.
 - Every mention of the answer in the stem — the term, its aliases and plurals — is blanked, `_____ (_____)` folds into one blank, and "a/an _____" becomes "a(n) _____".
 - Definition options are shown without their own term ("Read – Allows…" → "Allows…"); any other mention of it is blanked. Options containing the asked term are never used, nor (when avoidable) options with a blank in them.
 - A distractor is never offered if it could also be right (`too_close`: same name, one multi-word name inside the other, acronym ↔ expansion such as DFS / Distributed File System), if the stem names it, or if it is a number, a sentence fragment or a long phrase (`poor_option`).
-- Every option starts with a capital letter, so case gives nothing away. Short capitalized names (Read, Change, Owner) are matched only as names, so the verb "read" is not blanked.
+- **Echo words:** a word of the answer that the question shows (in the stem, or in the right definition) must appear in at least two wrong options too; and the right option may not stand out by length (more than 2.2× longer/shorter than every wrong one). The format (fill-in / term→meaning) is chosen so this holds; if no hint-free set of options exists, the term is skipped and another item is used (`mcq_hint_unavoidable`). `samples/mcq_audit.py` measures this on a term list.
+- A term with several meanings in the reviewer (e.g. **Read** in two permission lists) is asked with its section: "…best describes **Read** (SMB shared folder permissions)?"
+- Every option starts with a capital letter, so case gives nothing away (names with their own casing, like exFAT, stay as written). Short capitalized names (Read, Change, Owner) are matched only as names, so the verb "read" is not blanked.
 There are two stem formats. One is chosen at random per question, for variety:
 
 | format | stem | correct option | distractors |

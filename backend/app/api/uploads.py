@@ -93,7 +93,7 @@ def complete_upload(upload_id: str, body: CompleteUpload | None = None, db: Sess
         db.delete(s)
         db.commit()
         raise AppError(400, "UPLOAD_CORRUPT", "The uploaded bytes do not match. Please upload the file again.")
-    if not storage.looks_like(s.file_type, data[:8]):
+    if not storage.looks_like(s.file_type, data):
         db.delete(s)
         db.commit()
         raise AppError(400, "UNSUPPORTED_FILE_TYPE", f"This file does not look like a {s.file_type.upper()} file.")

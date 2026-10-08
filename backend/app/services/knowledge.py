@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Document, DocumentPage, SourceItem, utcnow
 from app.services import llm
-from app.services.fidelity import Rejection, ValidatedItem, dedupe_items, validate_item
+from app.services.fidelity import Rejection, ValidatedItem, dedupe_items, implied_aliases, validate_item
 
 log = logging.getLogger("aral.knowledge")
 
@@ -202,3 +202,28 @@ def supersede_items(db: Session, doc: Document) -> None:
     now = utcnow()
     for it in db.query(SourceItem).filter(SourceItem.document_id == doc.id, SourceItem.superseded_at.is_(None)):
         it.superseded_at = now
+
+
+def import_glossary(db: Session, doc: Document, entries) -> int:
+    """Store term-list entries as definition items, exactly as written (no LLM)."""
+    pages = {p.page_no: p for p in db.query(DocumentPage).filter(DocumentPage.document_id == doc.id)}
+    validated: list[ValidatedItem] = []
+    for e in entries:
+        page = pages.get(e.page_no)
+        if page is None:
+            continue
+        start = page.text.find(e.quote)
+        if start < 0:
+            log.info("glossary quote not found for %r", e.term)
+            continue
+        validated.append(ValidatedItem(kind="definition", page_no=e.page_no, term=e.term, aliases=implied_aliases(e.term), body=e.body,
+                                       source_quote=e.quote, quote_start=start, quote_end=start + len(e.quote),
+                                       topic=e.topic))
+    kept, _ = dedupe_items(validated, [])
+    for v in kept:
+        db.add(SourceItem(
+            document_id=doc.id, page_no=v.page_no, kind=v.kind, term=v.term, aliases=v.aliases,
+            body=v.body, source_quote=v.source_quote, quote_start=v.quote_start, quote_end=v.quote_end,
+            topic=v.topic, topic_key=v.topic_key,
+        ))
+    return len(kept)

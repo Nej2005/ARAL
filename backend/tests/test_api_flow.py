@@ -69,7 +69,7 @@ def test_file_bytes_are_dropped_after_pages_are_read(client, fixture_files, sess
 
 
 def test_upload_rejects_bad_files(client, tmp_path):
-    bad = tmp_path / "notes.txt"
+    bad = tmp_path / "notes.docx"
     bad.write_text("hello")
     assert upload(client, bad)["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
     fake_pdf = tmp_path / "fake.pdf"
@@ -482,3 +482,21 @@ def test_remove_file_with_delete_file(client, fixture_files):
     assert client.get(f"{API}/documents/{d1['id']}").status_code == 404
     assert client.get(f"{API}/exams/{e1['id']}").status_code == 404
     assert client.get(f"{API}/exams/{e2['id']}").status_code == 200
+
+
+def test_markdown_term_list_imports_without_gemini(client, tmp_path, fake_llm):
+    from tests.test_ingestion import GLOSSARY
+
+    md = tmp_path / "Terms.md"
+    md.write_text(GLOSSARY, encoding="utf-8")
+    d = upload(client, md)
+    assert d["status"] == "ready" and d["file_type"] == "md" and d["page_unit"] == "section"
+    assert d["item_count"] == 7 and d["items_by_kind"] == {"definition": 7, "fact": 0}
+    assert fake_llm.calls == []  # no Gemini call for a term list
+    r = client.post(f"{API}/reviewers", json={"title": "Terms", "document_ids": [d["id"]]}).json()
+    e = make_exam(client, r["id"], {"types": ["identification"], "count": 3})
+    assert e["status"] == "ready"
+    a = client.post(f"{API}/exams/{e['id']}/attempts").json()
+    fb = client.post(f"{API}/attempts/{a['attempt_id']}/answer",
+                     json={"question_id": a["card"]["question"]["id"], "response": "x"}).json()["feedback"]
+    assert fb["source"]["location"].startswith("section ")

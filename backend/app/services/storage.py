@@ -21,8 +21,20 @@ from app.models import Document, DocumentFile
 MAGIC = {"pdf": (b"%PDF",), "pptx": (b"PK\x03\x04",), "ppt": (b"\xd0\xcf\x11\xe0",)}
 
 
-def looks_like(file_type: str, head: bytes) -> bool:
-    return any(head.startswith(m) for m in MAGIC[file_type])
+TEXT_TYPES = ("md", "txt")
+
+
+def looks_like(file_type: str, data: bytes) -> bool:
+    """Magic bytes for binary formats; for text files, valid UTF-8 without NUL bytes."""
+    if file_type in TEXT_TYPES:
+        if b"\x00" in data[:4096]:
+            return False
+        try:
+            data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return False
+        return bool(data.strip())
+    return any(data.startswith(m) for m in MAGIC[file_type])
 
 
 def sha256_bytes(data: bytes) -> str:
