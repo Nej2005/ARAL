@@ -44,14 +44,15 @@ def _assign_tf(drafts: list[Draft], rng: random.Random) -> None:
 
 
 def _make_drafts(pairs: list[tuple[str, SourceItem]], docs: dict[str, Document], pool: list[SourceItem],
-                 rng: random.Random, start_ref: int = 0) -> list[Draft]:
+                 rng: random.Random, start_ref: int = 0, best_effort: bool = False,
+                 twins: set[str] | None = None) -> list[Draft]:
     drafts = []
     for k, (t, it) in enumerate(pairs):
-        d = Draft(ref=f"q{start_ref + k + 1}", type=t, item=it, doc=docs[it.document_id])
+        d = Draft(ref=f"q{start_ref + k + 1}", type=t, item=it, doc=docs[it.document_id], best_effort=best_effort)
         if t == "identification":
             build_identification(d)
         elif t == "mcq":
-            prepare_mcq(d, pool, rng)
+            prepare_mcq(d, pool, rng, prefer_meaning=bool(twins and it.id in twins))
         drafts.append(d)
     _assign_tf([d for d in drafts if d.type == "true_false"], rng)
     for d in drafts:
@@ -103,22 +104,65 @@ def _one_per_meaning(pairs: list, spare: list) -> tuple[list, list]:
     return kept, spare
 
 
+def _twins(pairs: list) -> dict[str, list[SourceItem]]:
+    """Items in the set whose definition matches another item's in the set, with those items."""
+    items = [it for _, it in pairs]
+    out: dict[str, list[SourceItem]] = {}
+    for a in items:
+        same = [b for b in items if b.id != a.id and same_meaning(a, b)]
+        if same:
+            out[a.id] = same
+    return out
+
+
+def _accept_twin_names(drafts: list[Draft], twins: dict[str, list[SourceItem]]) -> None:
+    """Identification shows the definition; when another term has the same one, both names are right."""
+    for d in drafts:
+        if d.type == "identification" and not d.failed and d.item.id in twins:
+            seen = {a.casefold() for a in d.accepted_answers}
+            for t in twins[d.item.id]:
+                for name in [t.term, *(t.aliases or [])]:
+                    if name and name.casefold() not in seen:
+                        seen.add(name.casefold())
+                        d.accepted_answers.append(name)
+
+
+def _keep_tf_true(drafts: list[Draft]) -> None:
+    """Best effort: a false statement that couldn't be made (no Gemini, failed checks) is asked as true."""
+    for d in drafts:
+        if d.best_effort and d.type == "true_false" and d.is_true is False and d.failed:
+            d.failed = None
+            build_true(d)
+            d.rationale = rationale_fallback(d.item.source_quote)
+
+
 def build_exam(db: Session, exam: Exam, rng: random.Random | None = None) -> None:
     """Fill `exam.questions`. Raises NothingToSelect or llm.LLMError; the caller sets the status."""
     rng = rng or random.Random()
     reviewer: Reviewer = exam.reviewer
     docs = {d.id: d for d in reviewer.documents}
     all_items = active_items(db, reviewer)
-    used = used_item_ids(db, reviewer)
     scoped = filter_items(all_items, exam.scope)
-    unused = [i for i in scoped if i.id not in used]
-    if not unused:
-        raise NothingToSelect(sum(1 for i in all_items if i.id not in used) - 0)
     types = [t for t in exam.question_types]
-    pairs = select(unused, types, exam.requested_count, rng)
-    picked_ids = {it.id for _, it in pairs}
-    spare = [i for i in unused if i.id not in picked_ids]
-    pairs, spare = _one_per_meaning(pairs, spare)
+    best_effort = bool(exam.all_items)
+    twins: dict[str, list[SourceItem]] = {}
+    if best_effort:
+        # "All items": everything in the scope, reviewed or not, twins included (asked by name instead).
+        pool = [i for i in scoped if set(types) != {"identification"} or i.kind == "definition"]
+        if not pool:
+            raise NothingToSelect(0)
+        pairs = select(pool, types, len(pool), rng)
+        spare: list[SourceItem] = []
+        twins = _twins(pairs)
+    else:
+        used = used_item_ids(db, reviewer)
+        unused = [i for i in scoped if i.id not in used]
+        if not unused:
+            raise NothingToSelect(sum(1 for i in all_items if i.id not in used) - 0)
+        pairs = select(unused, types, exam.requested_count, rng)
+        picked_ids = {it.id for _, it in pairs}
+        spare = [i for i in unused if i.id not in picked_ids]
+        pairs, spare = _one_per_meaning(pairs, spare)
 
     by_id = {i.id: i for i in all_items}
     index = LessonIndex.build(all_items)
@@ -126,11 +170,15 @@ def build_exam(db: Session, exam: Exam, rng: random.Random | None = None) -> Non
                         for i in all_items}
     lesson_terms = sorted({i.term for i in all_items if i.term}, key=str.casefold)
 
-    drafts = _make_drafts(pairs, docs, all_items, rng)
-    needs_llm = [d for d in drafts if not d.failed and (d.type == "mcq" or (d.type == "true_false" and d.is_true is False) or True)]
+    drafts = _make_drafts(pairs, docs, all_items, rng, best_effort=best_effort, twins=set(twins))
+    _accept_twin_names(drafts, twins)
+    needs_llm = [d for d in drafts if not d.failed]
+    needs_llm.sort(key=lambda d: not (d.type == "true_false" and d.is_true is False))  # Gemini-only work first
     label = f"exam={exam.id[:8]}"
-    result = run_batches(needs_llm, by_id, docs, lesson_terms, label) if needs_llm else GenerationBatch()
+    result = (run_batches(needs_llm, by_id, docs, lesson_terms, label, optional=best_effort)
+              if needs_llm else GenerationBatch())
     _apply_batch(drafts, result, by_id, docs, index, other_statements, rng)
+    _keep_tf_true(drafts)
 
     # Rebuild failed questions with spare unused items (§8.5 step 5). Up to three rounds, since a
     # replacement can fail the no-hint checks too. With little time left in this step, the rebuild

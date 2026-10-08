@@ -290,7 +290,7 @@ def summary_payload(db: Session, attempt: Attempt) -> dict:
         "wrong_cards": wrong,
         "skipped_cards": skipped,
         "retry_mistakes": {"count": len(wrong) + len(skipped)},
-        "next_set": {"unused_items": unused},
+        "next_set": {"unused_items": unused, "all_items": attempt.exam.all_items},
     }
 
 

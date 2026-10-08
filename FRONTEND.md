@@ -151,12 +151,13 @@ TYPE
  Multiple   True /    Identifi-
  choice     False     cation
 ITEMS
-[ − | 10 | + ]  / 38
+[ − | 10 | + ]  / 38   [ All 96 ]
 › Choose slides or topics
 [▶ START]
 ```
 - Type tiles are toggles: filled = on, dashed = off. At least one must be on.
 - The **/ 38** max updates live (`POST /reviewers/{id}/availability`).
+- **All 96** puts every item in scope in one set, reviewed or not (`all_items`); the stepper is locked to that number. When everything has been reviewed, it's the only choice.
 - **Choose slides or topics** is collapsed by default. Inside: a checkbox per file with a `Slides 1 – 24` range, and topic chips. Leaving it closed = the whole reviewer.
 - **▶ Start** → `POST /reviewers/{id}/exams` → the Making screen.
 

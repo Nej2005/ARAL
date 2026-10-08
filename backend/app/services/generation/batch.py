@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+from contextlib import nullcontext as _nothing
 
 from pydantic import BaseModel, Field
 
@@ -11,6 +13,8 @@ from app.services import llm
 from app.services.fidelity import clean_for_display
 from app.services.generation import Draft
 from app.services.generation.true_false import statement_text
+
+log = logging.getLogger("aral.generation")
 
 
 class DistractorPick(BaseModel):
@@ -106,11 +110,35 @@ def run_batch(payload: dict, label: str) -> GenerationBatch:
     return llm.generate_structured(BATCH_RULES, user, GenerationBatch, label)
 
 
-def run_batches(drafts: list[Draft], by_id, docs, lesson_terms: list[str], label: str, size: int = 25) -> GenerationBatch:
+# Time a best-effort exam keeps back for building the rest without Gemini and saving it.
+OPTIONAL_LLM_RESERVE_SECONDS = 60
+
+
+def run_batches(drafts: list[Draft], by_id, docs, lesson_terms: list[str], label: str, size: int = 25,
+                optional: bool = False) -> GenerationBatch:
+    """With `optional`, Gemini only improves the set: when it is slow, out of quota or the step is short
+    on time, the remaining questions keep the pre-computed options and the lesson's own sentence.
+    A false True/False statement can't be made without Gemini, so a chunk holding one is never optional
+    (put those drafts first)."""
     merged = GenerationBatch()
     for i in range(0, len(drafts), size):
         chunk = drafts[i : i + size]
-        part = run_batch(build_payload(chunk, by_id, docs, lesson_terms), f"{label} batch={i // size + 1}")
+        needed = any(d.type == "true_false" and d.is_true is False for d in chunk)
+        if optional and not needed:
+            left = llm.remaining_seconds()
+            if left is not None and left < OPTIONAL_LLM_RESERVE_SECONDS + 15:
+                log.info("%s: %.0fs left, building the remaining %d questions without Gemini",
+                         label, left, len(drafts) - i)
+                break
+            try:
+                # a shorter budget, so even a slow call leaves the reserve for building and saving
+                with llm.time_budget(left - OPTIONAL_LLM_RESERVE_SECONDS) if left is not None else _nothing():
+                    part = run_batch(build_payload(chunk, by_id, docs, lesson_terms), f"{label} batch={i // size + 1}")
+            except llm.LLMError as e:
+                log.info("%s: Gemini unavailable (%s), building the rest without it", label, e)
+                break
+        else:
+            part = run_batch(build_payload(chunk, by_id, docs, lesson_terms), f"{label} batch={i // size + 1}")
         merged.distractor_picks += part.distractor_picks
         merged.generated_distractors += part.generated_distractors
         merged.falsifications += part.falsifications

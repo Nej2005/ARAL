@@ -85,6 +85,7 @@ export interface Exam {
   actual_count: number;
   shortfall: number;
   parent_exam_id: string | null;
+  all_items: boolean;
   error_code: string | null;
   error_message: string | null;
   busy?: boolean;
@@ -116,6 +117,7 @@ export interface Availability {
   max_count_for_types: number;
   unused_by_type: Record<QuestionType, number>;
   unused_outside_scope: number;
+  all_items_count: number;
 }
 
 export interface Choice {
@@ -226,5 +228,5 @@ export interface Summary {
   wrong_cards: SummaryCard[];
   skipped_cards: SummaryCard[];
   retry_mistakes: { count: number };
-  next_set: { unused_items: number };
+  next_set: { unused_items: number; all_items: boolean };
 }

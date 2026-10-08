@@ -29,6 +29,7 @@ class Draft:
     candidate_texts: dict[str, str] = field(default_factory=dict)  # option text shown for each candidate
     echo_words: list[str] = field(default_factory=list)  # answer words the question shows (must not single it out)
     needs_generated: int = 0
+    best_effort: bool = False  # "All items" exams: never drop an item, keep any hint as small as possible
     failed: str | None = None
 
 

@@ -210,3 +210,34 @@ def test_stems_with_too_little_to_go_on_are_not_used():
     from app.services.generation.multiple_choice import enough_words
     assert not enough_words(f"{BLANK} - {BLANK} apply (see Table 5-2)")
     assert enough_words(f"{BLANK} - contains information used to audit the access to the resource")
+
+
+def test_best_effort_picks_the_least_hinting_options():
+    from app.services.generation.multiple_choice import choose_distractors, hint_penalty
+
+    correct = "Search service for files"
+    ordered = [("a", "Network share"), ("b", "Backup copy"), ("c", "Quota template"), ("d", "Disk service list")]
+    echo = {"service"}
+    assert choose_distractors(correct, ordered, echo) is None  # 'service' is in one wrong option only
+    trio = choose_distractors(correct, ordered, echo, best_effort=True)
+    assert trio and "d" in [i for i, _ in trio]  # the one option that also says 'service' is kept
+    assert hint_penalty(correct, [t for _, t in trio], echo) == 1
+
+
+def test_all_items_identification_twins_accept_either_name():
+    from types import SimpleNamespace
+
+    from app.services.generation import Draft
+    from app.services.generation.exam_builder import _accept_twin_names, _twins
+
+    body = "Allows groups or users to read, execute, delete, and modify files."
+    a = SimpleNamespace(id="a", term="Change", aliases=[], body=body, kind="definition")
+    b = SimpleNamespace(id="b", term="Read/Write", aliases=[], body=body, kind="definition")
+    c = SimpleNamespace(id="c", term="Read", aliases=[], body="Allows groups or users to read and execute files.",
+                        kind="definition")
+    twins = _twins([("identification", a), ("identification", b), ("identification", c)])
+    assert set(twins) == {"a", "b"}
+    d = Draft(ref="q1", type="identification", item=a, doc=None)
+    d.accepted_answers = ["Change"]
+    _accept_twin_names([d], twins)
+    assert d.accepted_answers == ["Change", "Read/Write"]

@@ -1,6 +1,8 @@
 """Offline audit: build multiple-choice questions from a term list and count every kind of hint.
 
-    .venv\\Scripts\\python samples\\mcq_audit.py path\\to\\Terms.md [--show N]
+    .venv\\Scripts\\python samples\\mcq_audit.py path\\to\\Terms.md [--show N] [--best-effort]
+
+--best-effort audits an "All items" exam: no term is skipped, the smallest hint is kept.
 
 No Gemini calls: distractors are the generator's own top-ranked safe candidates.
 """
@@ -32,7 +34,7 @@ def load(path):
     return items
 
 
-def audit(items, rounds=5, show=0):
+def audit(items, rounds=5, show=0, best_effort=False):
     doc = SimpleNamespace(id="d", filename="Terms.md", page_label=lambda n: f"section {n}")
     by_id = {i.id: i for i in items}
     index = LessonIndex.build(items)
@@ -43,7 +45,7 @@ def audit(items, rounds=5, show=0):
     for seed in range(rounds):
         rng = random.Random(seed)
         for it in items:
-            d = prepare_mcq(Draft(ref="q", type="mcq", item=it, doc=doc), items, rng)
+            d = prepare_mcq(Draft(ref="q", type="mcq", item=it, doc=doc, best_effort=best_effort), items, rng)
             if not d.failed:
                 finish_mcq(d, d.candidate_ids[:3], [], by_id, {"d": doc}, index, rng)
             if d.failed:
@@ -97,4 +99,4 @@ def audit(items, rounds=5, show=0):
 if __name__ == "__main__":
     path = sys.argv[1]
     show = int(sys.argv[sys.argv.index("--show") + 1]) if "--show" in sys.argv else 0
-    audit(load(path), show=show)
+    audit(load(path), show=show, best_effort="--best-effort" in sys.argv)

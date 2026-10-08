@@ -105,7 +105,7 @@ export default function Reviewer() {
   const r = rv.data;
   const waiting = r?.documents.filter((d) => d.status === "uploaded" || d.status === "extracting").length ?? 0;
   const failed = r?.documents.filter((d) => d.status === "failed") ?? [];
-  const canStart = !!r && r.status === "ready" && r.unused_items > 0 && r.document_count > 0;
+  const canStart = !!r && r.status === "ready" && r.item_count > 0 && r.document_count > 0;
 
   return (
     <div id="app">

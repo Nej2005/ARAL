@@ -109,13 +109,15 @@ button.lr:hover .muted,button.lr:hover .sub,button.lr:hover .bar .n,a.lr:hover .
 .type .n{font-size:var(--t-xs);letter-spacing:.06em;text-transform:uppercase}
 .type[aria-pressed="true"]{background:var(--accent);color:var(--on-accent);box-shadow:var(--glow-box)}
 .type[aria-pressed="false"]{border-style:dashed;color:var(--muted)}
-.count-row{display:flex;align-items:center;gap:14px}
+.count-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.count-row .chip{min-height:44px;padding:6px 14px;font-size:var(--t-sm)}
 .stepper{display:flex;border:1px solid var(--accent)}
 .stepper button{width:52px;border:0;background:none;cursor:pointer;color:var(--fg);display:grid;place-items:center}
 .stepper button:hover:not(:disabled){background:var(--accent);color:var(--on-accent)}
 .stepper button:disabled{opacity:.3;cursor:not-allowed}
 .stepper input{width:76px;border:0;border-inline:1px solid var(--accent);background:transparent;text-align:center;font-family:var(--display);font-size:36px;padding:2px 0;appearance:textfield;-moz-appearance:textfield}
 .stepper input::-webkit-inner-spin-button{appearance:none;margin:0}
+.stepper input:disabled{color:var(--fg);opacity:1}
 details.more summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;font-size:var(--t-sm);letter-spacing:.06em;text-transform:uppercase;min-height:40px}
 details.more summary::-webkit-details-marker{display:none}
 details.more[open] summary svg{transform:rotate(90deg)}
@@ -128,6 +130,8 @@ details.more[open] summary svg{transform:rotate(90deg)}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{border:1px dashed var(--accent);background:none;padding:6px 10px;min-height:34px;cursor:pointer;font-size:var(--t-xs);color:var(--fg)}
 .chip[aria-pressed="true"]{border-style:solid;background:var(--accent);color:var(--on-accent)}
+.chip:disabled{cursor:not-allowed}
+.chip:disabled:not([aria-pressed="true"]){opacity:.35}
 .drop{display:grid;place-items:center;gap:8px;width:100%;padding:28px 12px;border:1px dashed var(--accent);background:transparent;cursor:pointer;color:var(--fg)}
 .drop:hover,.drop.over{background:var(--hatch)}
 .drop b{font-family:var(--display);font-weight:400;font-size:28px;letter-spacing:.06em;text-transform:uppercase}

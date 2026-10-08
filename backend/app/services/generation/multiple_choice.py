@@ -116,6 +116,8 @@ def _safe_meaning_distractor(c, it, correct_text: str) -> bool:
         return False
     if mentions(text, terms_of(it)):  # would point at the asked term
         return False
+    if same_meaning(c, it):  # would be right too
+        return False
     return norm_cmp(text) != norm_cmp(correct_text) and not too_close(text, correct_text)
 
 
@@ -140,21 +142,39 @@ def echo_words(it, fmt: str, stem, correct_text: str) -> set:
 
 def option_set_ok(correct: str, distractor_texts: list, echo: set) -> bool:
     """No echo word only in the right option (each must be in >= 2 wrong ones), no length outlier."""
-    for w in echo:
-        if sum(1 for t in distractor_texts if w in content_words(t)) < 2:
-            return False
+    return hint_penalty(correct, distractor_texts, echo) == 0
+
+
+def hint_penalty(correct: str, distractor_texts: list, echo: set, words: dict | None = None) -> int:
+    """How much the option set points at the answer: 0 = nothing. Each echo word missing from the
+    wrong options counts, and a right option that stands out by length counts 2."""
+    words = words or {}
+    sets = [words[t] if t in words else content_words(t) for t in distractor_texts]
+    p = sum(max(0, 2 - sum(1 for s in sets if w in s)) for w in echo)
     n = len(correct)
     ls = [len(t) for t in distractor_texts]
-    return not (n > MAX_LEN_RATIO * max(ls) or n * MAX_LEN_RATIO < min(ls))
+    if n > MAX_LEN_RATIO * max(ls) or n * MAX_LEN_RATIO < min(ls):
+        p += 2
+    return p
 
 
-def choose_distractors(correct: str, ordered: list, echo: set, limit: int = 16):
-    """First set of 3 (in preference order) that gives nothing away. `ordered` = [(id, text)]."""
+def choose_distractors(correct: str, ordered: list, echo: set, limit: int = 16, best_effort: bool = False):
+    """First set of 3 (in preference order) that gives nothing away. `ordered` = [(id, text)].
+    With `best_effort`, when no such set exists, the set with the smallest hint instead."""
     pool = ordered[:limit]
     for trio in combinations(pool, 3):
         if option_set_ok(correct, [t for _, t in trio], echo):
             return list(trio)
-    return None
+    if not best_effort:
+        return None
+    pool = ordered[:24]
+    words = {t: content_words(t) for _, t in pool}
+    best, best_p = None, None
+    for trio in combinations(pool, 3):
+        p = hint_penalty(correct, [t for _, t in trio], echo, words)
+        if best_p is None or p < best_p:
+            best, best_p = list(trio), p
+    return best
 
 
 def _candidates(it, fmt: str, pool, stem, correct_text: str, rng: random.Random):
@@ -197,8 +217,13 @@ def _has_twin(it, pool) -> bool:
                and norm_cmp(c.body) != norm_cmp(it.body) for c in pool)
 
 
-def prepare_mcq(d: Draft, pool: list, rng: random.Random) -> Draft:
-    """Pick a stem format whose options can be hint-free, plus the safe candidates. Gemini picks among them later."""
+def prepare_mcq(d: Draft, pool: list, rng: random.Random, prefer_meaning: bool = False) -> Draft:
+    """Pick a stem format whose options can be hint-free, plus the safe candidates. Gemini picks among them later.
+
+    With `d.best_effort` the item is never dropped for a hint: weaker formats are allowed and, when no
+    hint-free set exists, the format whose best option set hints the least wins. `prefer_meaning` asks
+    "Which best describes X?" first (used when another item in the set has the same definition, so the
+    same fill-in sentence won't appear twice with two different answers)."""
     it = d.item
     if not it.term:
         d.failed = "mcq_no_format"
@@ -213,18 +238,39 @@ def prepare_mcq(d: Draft, pool: list, rng: random.Random) -> Draft:
     if (it.kind == "definition" and visible_chars(correct_meaning) >= MIN_MEANING_CHARS
             and not mentions(correct_meaning, answer_terms) and enough_words(correct_meaning)):
         formats.append("term_meaning")
+    if not formats and d.best_effort:
+        if stem is not None:
+            formats.append("fill_in")
+        if (it.kind == "definition" and visible_chars(correct_meaning) >= MIN_MEANING_CHARS
+                and not mentions(correct_meaning, answer_terms)):
+            formats.append("term_meaning")
     if not formats:
         d.failed = "mcq_no_format"
         return d
     rng.shuffle(formats)
+    if prefer_meaning and "term_meaning" in formats:
+        formats.remove("term_meaning")
+        formats.insert(0, "term_meaning")
 
     chosen = None
+    tried = []
     for fmt in formats:
         correct_text = capitalize_first(it.term) if fmt == "fill_in" else correct_meaning
         ranked, echo = _candidates(it, fmt, pool, stem, correct_text, rng)
-        if choose_distractors(correct_text, [(c.id, t) for c, t in ranked], echo):
+        # a twin is asked by name even if that leaves a small hint: the same fill-in sentence with two answers is worse
+        lenient = d.best_effort and prefer_meaning and fmt == "term_meaning"
+        if choose_distractors(correct_text, [(c.id, t) for c, t in ranked], echo, best_effort=lenient):
             chosen = (fmt, correct_text, ranked, echo)
             break
+        tried.append((fmt, correct_text, ranked, echo))
+    if chosen is None and d.best_effort:
+        scored = []
+        for k, (fmt, correct_text, ranked, echo) in enumerate(tried):
+            trio = choose_distractors(correct_text, [(c.id, t) for c, t in ranked], echo, best_effort=True)
+            if trio:
+                scored.append((hint_penalty(correct_text, [t for _, t in trio], echo), k))
+        if scored:
+            chosen = tried[min(scored)[1]]
     if chosen is None:
         d.failed = "mcq_hint_unavoidable"
         return d
@@ -262,7 +308,8 @@ def finish_mcq(d: Draft, picked_ids: list, generated: list, by_id: dict,
     for sid in [*picked_ids, *d.candidate_ids]:
         if sid in d.candidate_texts and sid in by_id and sid not in order:
             order.append(sid)
-    trio = choose_distractors(correct, [(sid, d.candidate_texts[sid]) for sid in order], set(d.echo_words))
+    trio = choose_distractors(correct, [(sid, d.candidate_texts[sid]) for sid in order], set(d.echo_words),
+                              best_effort=d.best_effort)
     if trio is None:
         d.failed = "mcq_hint_unavoidable"
         return d

@@ -30,6 +30,7 @@ def used_item_ids(db: Session, reviewer: Reviewer) -> set[str]:
             Exam.reviewer_id == reviewer.id,
             Exam.coverage_epoch == reviewer.coverage_epoch,
             Exam.status == "ready",
+            Exam.all_items.is_(False),  # an "All items" set is a full review, not part of coverage
         )
         .distinct()
     )

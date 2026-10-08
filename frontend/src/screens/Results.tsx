@@ -78,7 +78,8 @@ export default function Results() {
 
   const d = s.data;
   const miss = d?.retry_mistakes.count ?? 0;
-  const left = d?.next_set.unused_items ?? 0;
+  const allItems = !!d?.next_set.all_items;  // "All items" sets reshuffle everything, reviewed or not
+  const left = allItems ? 1 : d?.next_set.unused_items ?? 0;
   const busy = retry.isPending || restart.isPending || newSet.isPending;
   const strip = d
     ? [

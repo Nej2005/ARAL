@@ -24,6 +24,7 @@ export default function NewExam({ reviewer, onClose }: { reviewer: ReviewerDetai
   const toast = useToast();
   const [types, setTypes] = useState<QuestionType[]>(ALL);
   const [count, setCount] = useState(10);
+  const [all, setAll] = useState(false);
   const [more, setMore] = useState(false);
   const [files, setFiles] = useState<Record<string, FileScope>>({});
   const [topics, setTopics] = useState<string[]>([]);
@@ -50,12 +51,16 @@ export default function NewExam({ reviewer, onClose }: { reviewer: ReviewerDetai
 
   const av = useAvailability(reviewer.id, types, scope);
   const max = av.data?.max_count_for_types ?? 0;
+  const counting = av.isFetching;  // numbers from the previous selection are shown meanwhile
+  const allCount = av.data?.all_items_count ?? 0;
+  const useAll = all || (!!av.data && max === 0 && allCount > 0);  // everything reviewed: only "All" is left
   useEffect(() => {
     if (av.data) setCount((c) => Math.max(max ? 1 : 0, Math.min(c, max)));
   }, [av.data, max]);
 
   const start = useMutation({
-    mutationFn: () => api.post<Exam>(`/reviewers/${reviewer.id}/exams`, { types, count, scope }),
+    mutationFn: () =>
+      api.post<Exam>(`/reviewers/${reviewer.id}/exams`, useAll ? { types, all_items: true, scope } : { types, count, scope }),
     onSuccess: (e) => { onClose(); nav(`/exams/${e.id}/making`); },
     onError: (e) => toast(describeError(e)),
   });
@@ -83,19 +88,29 @@ export default function NewExam({ reviewer, onClose }: { reviewer: ReviewerDetai
         <span className="label">Items</span>
         <div className="count-row">
           <div className="stepper">
-            <button onClick={() => setCount((c) => Math.max(1, c - 1))} disabled={count <= 1} aria-label="Fewer"><Icon name="dash" /></button>
+            <button onClick={() => setCount((c) => Math.max(1, c - 1))} disabled={useAll || count <= 1} aria-label="Fewer"><Icon name="dash" /></button>
             <input
               id="count"
               inputMode="numeric"
-              value={count}
+              value={useAll ? allCount : count}
+              disabled={useAll}
               onChange={(e) => setCount(Math.max(1, Math.min(max || 1, parseInt(e.target.value, 10) || 1)))}
               aria-label="Number of items"
             />
-            <button onClick={() => setCount((c) => Math.min(max, c + 1))} disabled={count >= max} aria-label="More"><Icon name="plus" /></button>
+            <button onClick={() => setCount((c) => Math.min(max, c + 1))} disabled={useAll || count >= max} aria-label="More"><Icon name="plus" /></button>
           </div>
-          <span className="muted">/ {av.isLoading ? "…" : max}</span>
+          {useAll ? null : <span className="muted">/ {counting ? "…" : max}</span>}
+          <button
+            className="chip"
+            aria-pressed={useAll}
+            disabled={!allCount || (max === 0 && allCount > 0)}
+            onClick={() => setAll((v) => !v)}
+            title="Every item, reviewed or not"
+          >
+            All {counting ? "…" : allCount}
+          </button>
         </div>
-        {av.data && av.data.unused_outside_scope > 0 && max === 0 && (
+        {av.data && av.data.unused_outside_scope > 0 && max === 0 && !allCount && (
           <p className="fine">{av.data.unused_outside_scope} unused items outside this selection</p>
         )}
       </div>
@@ -134,7 +149,7 @@ export default function NewExam({ reviewer, onClose }: { reviewer: ReviewerDetai
           )}
         </div>
       </details>
-      <button className="btn primary big block" disabled={!types.length || !max || start.isPending} onClick={() => start.mutate()}>
+      <button className="btn primary big block" disabled={!types.length || counting || !(useAll ? allCount : max) || start.isPending} onClick={() => start.mutate()}>
         <Icon name="play" />Start
       </button>
     </Sheet>

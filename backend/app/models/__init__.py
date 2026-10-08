@@ -229,6 +229,9 @@ class Exam(Base):
     parent_exam_id: Mapped[str | None] = mapped_column(
         String(32), ForeignKey("exams.id", ondelete="SET NULL"), nullable=True
     )
+    # "All items": every item in the scope, reviewed or not; a question that can't be made hint-free
+    # gets the least-hinting options instead of being skipped.
+    all_items: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     status: Mapped[str] = mapped_column(String(16), default="generating")  # generating|ready|failed
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

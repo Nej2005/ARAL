@@ -393,6 +393,8 @@ Input: `reviewer_id`, `types` (1–3 types), `count`, optional `scope`.
 
 `POST /reviewers/{id}/availability` exposes these numbers **before** generating, so the UI can cap the "number of items" input.
 
+**All items** (`"all_items": true`): one set with *every* item in the scope, reviewed or not (for a full review). Coverage is ignored, `count` becomes the number of items in scope, the 100-item cap doesn't apply, and no item is dropped for a hint: the format and the three wrong options are chosen to give the least away (`hint_penalty`), and twin terms with the same definition are asked by name ("Which best describes …?"). Gemini is optional here: if it is slow or out of quota, the rest of the set keeps the pre-computed options and the lesson's own sentence as the explanation, and twins in Identification accept either name. False True/False statements still need Gemini, so those are made first and that part is not optional. An "All items" set is a full review: it does **not** count toward coverage (§4), so the unreviewed items stay available for normal sets. Up to 300 items per set. `next-set` of such an exam reshuffles everything again.
+
 ### 8.2 Identification — deterministic, no LLM
 - `prompt` = the item's `body` (the definition) **as written in the document**.
 - If the term itself appears in the definition, replace it with `_____`.
@@ -404,7 +406,7 @@ Input: `reviewer_id`, `types` (1–3 types), `count`, optional `scope`.
 - Every mention of the answer in the stem — the term, its aliases and plurals — is blanked, `_____ (_____)` folds into one blank, and "a/an _____" becomes "a(n) _____".
 - Definition options are shown without their own term ("Read – Allows…" → "Allows…"); any other mention of it is blanked. Options containing the asked term are never used, nor (when avoidable) options with a blank in them.
 - A distractor is never offered if it could also be right (`too_close`: same name, one multi-word name inside the other, acronym ↔ expansion such as DFS / Distributed File System), if the stem names it, or if it is a number, a sentence fragment or a long phrase (`poor_option`).
-- **Echo words:** a word of the answer that the question shows (in the stem, or in the right definition) must appear in at least two wrong options too; and the right option may not stand out by length (more than 2.2× longer/shorter than every wrong one). The format (fill-in / term→meaning) is chosen so this holds; if no hint-free set of options exists, the term is skipped and another item is used (`mcq_hint_unavoidable`). `samples/mcq_audit.py` measures this on a term list.
+- **Echo words:** a word of the answer that the question shows (in the stem, or in the right definition) must appear in at least two wrong options too; and the right option may not stand out by length (more than 2.2× longer/shorter than every wrong one). The format (fill-in / term→meaning) is chosen so this holds; if no hint-free set of options exists, the term is skipped and another item is used (`mcq_hint_unavoidable`), except in an "All items" exam (§8.1), which keeps the term with the least-hinting options. `samples/mcq_audit.py` measures this on a term list.
 - A term with several meanings in the reviewer (e.g. **Read** in two permission lists) is asked with its section: "…best describes **Read** (SMB shared folder permissions)?"
 - Every option starts with a capital letter, so case gives nothing away (names with their own casing, like exFAT, stay as written). Short capitalized names (Read, Change, Owner) are matched only as names, so the verb "read" is not blanked.
 There are two stem formats. One is chosen at random per question, for variety:
@@ -637,14 +639,14 @@ When `APP_PASSCODE` is set, every route except `/health` needs the header `X-Pas
 | `POST /reviewers/{id}/documents` | `{ "document_id": "d3" }` | `200 reviewer` |
 | `DELETE /reviewers/{id}/documents/{document_id}` | `?delete_file=true` optional | `200 reviewer + { deleted_file, deleted_exams }`. With `delete_file`, a file no other reviewer uses is deleted, together with the exams that have questions from it. `409 EMPTY_REVIEWER` if it is the last document. Each document in `GET /reviewers/{id}` has `exam_count` and `shared` so the UI can say what will be deleted |
 | `GET /reviewers/{id}/outline` | — | `200 { documents: [ { document_id, filename, page_count, pages: [ { page_no, title, item_count } ] } ], topics: [ { topic, topic_key, item_count, unused_count } ] }` |
-| `POST /reviewers/{id}/availability` | `{ "types": [...], "scope"?: {...} }` | `200 { total_items, used_items, unused_items, max_count_for_types, unused_by_type: { mcq, true_false, identification }, unused_outside_scope }` |
+| `POST /reviewers/{id}/availability` | `{ "types": [...], "scope"?: {...} }` | `200 { total_items, used_items, unused_items, max_count_for_types, unused_by_type: { mcq, true_false, identification }, unused_outside_scope, all_items_count }` |
 | `POST /reviewers/{id}/coverage/reset` | — | `200 { coverage_epoch }` |
 | `POST /reviewers/{id}/export` | `{ "format": "pdf" \| "csv", "scope"?: {...} }` | file download (§11.2, §11.3) |
 
 ### Exams
 | Method & path | Body | Response |
 |---|---|---|
-| `POST /reviewers/{id}/exams` | `{ "types": ["mcq","true_false"], "count": 20, "scope"?: {...} }` | `202 { id, status: "generating" }`; `409 DOCUMENTS_NOT_READY`; `409 ALL_ITEMS_REVIEWED`; `422 INVALID_SCOPE` |
+| `POST /reviewers/{id}/exams` | `{ "types": ["mcq","true_false"], "count": 20, "scope"?: {...}, "all_items"?: false }` | `202 { id, status: "generating" }`; `409 DOCUMENTS_NOT_READY`; `409 ALL_ITEMS_REVIEWED`; `422 INVALID_SCOPE` |
 | `DELETE /exams/{id}` | — | `204`. Deletes the set with its questions, attempts and answers; its items count as unused again. `409 ALREADY_PROCESSING` while it is being built |
 | `POST /exams/{id}/process` | — | Builds the questions (§8.5) and returns the exam with `done`. Call until `done` |
 | `GET /exams/{id}` | — | `200 { id, reviewer_id, status, types, scope, requested_count, actual_count, shortfall }`. No questions are included; they are served one card at a time through attempts. |
@@ -663,7 +665,7 @@ Validation: `types` must be non-empty and contain only known values, and `1 ≤ 
 | `GET /attempts/{id}/cards/{index}` | — | `200 card` (1-based index; also updates `last_viewed_index`). Answered cards include `answered: true` + `feedback`. `404` if the index is out of range |
 | `POST /attempts/{id}/answer` | `{ "question_id": "...", "response": "c3" }` / `"true"` / `"Photosynthesis"` | `200 { feedback, progress, next_unanswered_index, finished }`; `409 ALREADY_ANSWERED`; `409 ATTEMPT_COMPLETED` |
 | `POST /attempts/{id}/finish` | — | `200 summary`. Marks the attempt completed, with skipped cards counted as not correct |
-| `GET /attempts/{id}/summary` | — | `200 { kind, correct_count, answered, skipped, total, percent, wrong_cards: [...], skipped_cards: [...], retry_mistakes: { count }, next_set: { unused_items } }`. Each card in the lists contains `prompt`, `your_answer` (null if skipped), `correct_answer`, `why`, `source`. `409 ATTEMPT_NOT_FINISHED` if the attempt is still in progress |
+| `GET /attempts/{id}/summary` | — | `200 { kind, correct_count, answered, skipped, total, percent, wrong_cards: [...], skipped_cards: [...], retry_mistakes: { count }, next_set: { unused_items, all_items } }`. Each card in the lists contains `prompt`, `your_answer` (null if skipped), `correct_answer`, `why`, `source`. `409 ATTEMPT_NOT_FINISHED` if the attempt is still in progress |
 | `POST /attempts/{id}/retry-mistakes` | — | `201 { attempt_id, attempt_no, kind: "mistakes", total, card }`; `409 ATTEMPT_NOT_FINISHED`; `409 NO_MISTAKES` |
 
 **Card**, unanswered (never contains the answer):

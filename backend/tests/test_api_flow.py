@@ -524,3 +524,54 @@ def test_rebuild_without_gemini_when_time_is_short(client, fixture_files, fake_l
     e = make_exam(client, r["id"], {"types": ["mcq"], "count": 6})
     assert e["status"] == "ready" and e["actual_count"] == 6 and e["shortfall"] == 0
     assert sum(1 for c in fake_llm.calls if c[0] == "GenerationBatch") == n_before + 1  # no extra Gemini call
+
+
+def test_all_items_exam_covers_everything_even_reviewed_items(client, tmp_path, fake_llm):
+    """'All items': every term in one set, already-reviewed ones too, and Gemini is optional."""
+    from tests.test_ingestion import GLOSSARY
+
+    md = tmp_path / "Terms.md"
+    md.write_text(GLOSSARY, encoding="utf-8")
+    d = upload(client, md)
+    r = client.post(f"{API}/reviewers", json={"title": "Terms", "document_ids": [d["id"]]}).json()
+    first = make_exam(client, r["id"], {"types": ["mcq"], "count": 3})
+    assert first["status"] == "ready"
+
+    av = client.post(f"{API}/reviewers/{r['id']}/availability", json={"types": ["mcq"]}).json()
+    assert av["max_count_for_types"] == 4 and av["all_items_count"] == 7
+
+    e = make_exam(client, r["id"], {"types": ["mcq"], "all_items": True})
+    assert e["status"] == "ready" and e["all_items"] is True
+    assert e["requested_count"] == e["actual_count"] == d["item_count"] == 7
+    # a full review doesn't use up the unreviewed items
+    assert client.get(f"{API}/reviewers/{r['id']}").json()["used_items"] == 3
+
+    # Gemini out of quota: the set is still built, from the pre-computed options
+    fake_llm.fail_with = llm.LLMQuotaExceeded("limit")
+    again = next_set(client, e["id"])
+    assert again["status"] == "ready" and again["all_items"] is True and again["actual_count"] == 7
+    a = client.post(f"{API}/exams/{again['id']}/attempts").json()
+    q = a["card"]["question"]
+    assert len(q["choices"]) == 4
+
+
+def test_all_items_true_false_still_needs_gemini_for_false_statements(client, tmp_path, fake_llm):
+    """Without Gemini every statement would be true, which gives the answers away: the step waits instead."""
+    from tests.test_ingestion import GLOSSARY
+
+    md = tmp_path / "Terms.md"
+    md.write_text(GLOSSARY, encoding="utf-8")
+    d = upload(client, md)
+    r = client.post(f"{API}/reviewers", json={"title": "Terms", "document_ids": [d["id"]]}).json()
+    fake_llm.fail_with = llm.LLMQuotaExceeded("limit")
+    e = make_exam(client, r["id"], {"types": ["true_false"], "all_items": True})
+    assert e["status"] == "failed" and e["error_code"] == "LLM_QUOTA_EXCEEDED"
+    fake_llm.fail_with = None
+    ok = make_exam(client, r["id"], {"types": ["true_false"], "all_items": True})
+    assert ok["status"] == "ready" and ok["actual_count"] == 7
+
+
+def test_count_is_required_unless_all_items(client, fixture_files):
+    r, *_ = _ready_reviewer(client, fixture_files)
+    res = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["mcq"]})
+    assert res.status_code == 422

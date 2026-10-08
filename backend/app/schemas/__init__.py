@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 QuestionType = Literal["mcq", "true_false", "identification"]
 
@@ -53,8 +53,15 @@ class ExportRequest(BaseModel):
 
 class CreateExam(BaseModel):
     types: list[QuestionType] = Field(min_length=1)
-    count: int = Field(ge=1)
+    count: int | None = Field(default=None, ge=1)  # required unless all_items
     scope: Scope | None = None
+    all_items: bool = False  # every item in the scope (reviewed or not), hints kept as small as possible
+
+    @model_validator(mode="after")
+    def _count_needed(self):
+        if self.count is None and not self.all_items:
+            raise ValueError("count is required")
+        return self
 
     @field_validator("types")
     @classmethod

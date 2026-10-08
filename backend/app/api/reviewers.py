@@ -238,7 +238,9 @@ def availability(reviewer_id: str, body: AvailabilityRequest, db: Session = Depe
     scope = _resolve_scope(db, r, body.scope)
     items = active_items(db, r)
     used = used_item_ids(db, r)
-    av = compute_availability(filter_items(items, scope), items, used, list(body.types))
+    scoped = filter_items(items, scope)
+    av = compute_availability(scoped, items, used, list(body.types))
+    in_scope = sum(1 for i in scoped if set(body.types) != {"identification"} or i.kind == "definition")
     return {
         "total_items": av.total_items,
         "used_items": av.used_items,
@@ -246,6 +248,7 @@ def availability(reviewer_id: str, body: AvailabilityRequest, db: Session = Depe
         "max_count_for_types": av.max_count_for_types,
         "unused_by_type": av.unused_by_type,
         "unused_outside_scope": av.unused_outside_scope,
+        "all_items_count": in_scope if body.types else 0,  # for "All items": reviewed ones count too
         "scope": scope,
     }
 

@@ -34,6 +34,7 @@ def exam_payload(e: Exam) -> dict:
         "actual_count": e.actual_count,
         "shortfall": e.shortfall,
         "parent_exam_id": e.parent_exam_id,
+        "all_items": e.all_items,
         "error_code": e.error_code,
         "error_message": e.error_message,
         "busy": jobs.is_busy(e),
@@ -50,25 +51,40 @@ def _check_ready(r: Reviewer) -> None:
         raise AppError(409, "EMPTY_REVIEWER", "Add a file to this reviewer first.")
 
 
+# One "All items" set must still be built inside one processing step.
+MAX_ALL_ITEMS = 300
+
+
 def _start(db: Session, r: Reviewer, types: list[str], count: int, scope,
-           parent: Exam | None = None) -> JSONResponse:
+           parent: Exam | None = None, all_items: bool = False) -> JSONResponse:
     _check_ready(r)
-    if count > settings.max_exam_items:
-        raise AppError(422, "VALIDATION_ERROR", f"count must be between 1 and {settings.max_exam_items}.")
     items = active_items(db, r)
+    if all_items:
+        # Every item in the scope, reviewed or not; Identification can only use definitions.
+        scoped = filter_items(items, scope)
+        eligible = [i for i in scoped if set(types) != {"identification"} or i.kind == "definition"]
+        if not eligible:
+            raise AppError(409, "ALL_ITEMS_REVIEWED", "There are no items to put in this exam.", unused_outside_scope=0)
+        if len(eligible) > MAX_ALL_ITEMS:
+            raise AppError(422, "VALIDATION_ERROR",
+                           f"All items works for up to {MAX_ALL_ITEMS} items; choose slides or topics first.")
+        count = len(eligible)
+    elif count > settings.max_exam_items:
+        raise AppError(422, "VALIDATION_ERROR", f"count must be between 1 and {settings.max_exam_items}.")
     used = used_item_ids(db, r)
     unused_scoped = [i for i in filter_items(items, scope) if i.id not in used]
-    if not unused_scoped:
+    if not all_items and not unused_scoped:
         outside = sum(1 for i in items if i.id not in used)
         raise AppError(409, "ALL_ITEMS_REVIEWED",
                        "Every item in this reviewer has been part of an exam." if not outside
                        else "Every item in the selected part has been part of an exam.",
                        unused_outside_scope=outside)
-    if set(types) == {"identification"} and not any(i.kind == "definition" for i in unused_scoped):
+    if not all_items and set(types) == {"identification"} and not any(i.kind == "definition" for i in unused_scoped):
         raise AppError(409, "ALL_ITEMS_REVIEWED", "No unused definitions are left for Identification.",
                        unused_outside_scope=0)
     exam = Exam(reviewer_id=r.id, question_types=list(types), requested_count=count, scope=scope,
-                coverage_epoch=r.coverage_epoch, parent_exam_id=parent.id if parent else None, status="generating")
+                coverage_epoch=r.coverage_epoch, parent_exam_id=parent.id if parent else None, status="generating",
+                all_items=all_items)
     db.add(exam)
     db.commit()
     return JSONResponse(status_code=202, content=exam_payload(exam))
@@ -78,7 +94,7 @@ def _start(db: Session, r: Reviewer, types: list[str], count: int, scope,
 def create_exam(reviewer_id: str, body: CreateExam, db: Session = Depends(get_db)):
     r = get_reviewer(db, reviewer_id)
     scope = _resolve_scope(db, r, body.scope)
-    return _start(db, r, body.types, body.count, scope)
+    return _start(db, r, body.types, body.count, scope, all_items=body.all_items)
 
 
 @router.post("/exams/{exam_id}/process")
@@ -118,7 +134,7 @@ def next_set(exam_id: str, body: NextSet | None = None, db: Session = Depends(ge
         scope = _resolve_scope(db, r, body.scope)  # explicit null = whole reviewer
     else:
         scope = parent.scope
-    return _start(db, r, types, count, scope, parent=parent)
+    return _start(db, r, types, count, scope, parent=parent, all_items=parent.all_items)
 
 
 @router.get("/exams/{exam_id}/export")
