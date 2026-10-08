@@ -157,7 +157,7 @@ def test_no_option_could_also_be_right_or_is_ruled_out_by_the_stem():
     # the concrete cases from the live exam
     hard = build(BY_ID["hard"], fmt="fill_in")
     assert "Soft quota" not in options(hard)  # the stem says "(called a soft quota)"
-    ntfsq = build(BY_ID["ntfsq"], fmt="fill_in")
+    ntfsq = build(BY_ID["ntfsq"])  # whichever format is hint-free
     assert "User quotas" not in options(ntfsq)
     ns = build(BY_ID["ns"], fmt="fill_in")
     assert "Distributed File System" not in options(ns)
@@ -165,7 +165,7 @@ def test_no_option_could_also_be_right_or_is_ruled_out_by_the_stem():
 
 
 def test_gemini_picks_outside_the_safe_list_are_ignored():
-    d = build(BY_ID["ntfsq"], fmt="fill_in", picks=["userq", "num", "ntfsq"])
+    d = build(BY_ID["ntfsq"], picks=["userq", "num", "ntfsq"])
     assert "User quotas" not in options(d) and "16777216" not in options(d) and len(set(options(d))) == 4
 
 
@@ -193,3 +193,20 @@ def test_everyday_domain_words_count_as_echoes():
     from app.services.generation.multiple_choice import content_words
     assert {"user", "quota"} <= content_words("User quotas")
     assert "folder" in content_words("limit the space consumed by a folder")
+
+
+def test_one_set_never_holds_two_terms_with_the_same_definition():
+    from app.services.generation.exam_builder import _one_per_meaning
+    change = item("chg", "Change", "Change - Allows groups or users to read, execute, delete, and modify files.")
+    rw = item("rw2", "Read/Write", "Read/Write - Allows groups or users to read, execute, delete, and modify files.")
+    other = item("oth", "Other", "Other - Something entirely different that is still a definition.")
+    kept, spare = _one_per_meaning([("mcq", change), ("mcq", rw)], [other])
+    assert [it.id for _, it in kept] == ["chg", "oth"] and spare == []
+    kept, _ = _one_per_meaning([("mcq", change), ("mcq", rw)], [])
+    assert [it.id for _, it in kept] == ["chg"]
+
+
+def test_stems_with_too_little_to_go_on_are_not_used():
+    from app.services.generation.multiple_choice import enough_words
+    assert not enough_words(f"{BLANK} - {BLANK} apply (see Table 5-2)")
+    assert enough_words(f"{BLANK} - contains information used to audit the access to the resource")

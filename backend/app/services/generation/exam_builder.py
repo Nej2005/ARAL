@@ -14,7 +14,7 @@ from app.services.fidelity import LessonIndex, check_rationale, norm_cmp, ration
 from app.services.generation import Draft, TYPE_ORDER
 from app.services.generation.batch import GenerationBatch, run_batches
 from app.services.generation.identification import build_identification
-from app.services.generation.multiple_choice import finish_mcq, prepare_mcq
+from app.services.generation.multiple_choice import finish_mcq, prepare_mcq, same_meaning
 from app.services.generation.selector import select
 from app.services.generation.true_false import build_false, build_true, statement_text
 from app.services.scope import filter_items
@@ -86,6 +86,23 @@ def _apply_batch(drafts: list[Draft], result: GenerationBatch, by_id, docs, inde
         d.rationale = r if check_rationale(r, index.text_norm, forbidden) else rationale_fallback(d.item.source_quote)
 
 
+def _one_per_meaning(pairs: list, spare: list) -> tuple[list, list]:
+    """Never two terms with the same definition in one set (e.g. 'Change' and 'Read/Write'):
+    the same question would appear twice with different answers. Swap in a spare item instead."""
+    kept: list = []
+    spare = list(spare)
+    for t, it in pairs:
+        if any(same_meaning(it, k) for _, k in kept):
+            repl = next((s for s in spare if (t != "identification" or s.kind == "definition")
+                         and not any(same_meaning(s, k) for _, k in kept)), None)
+            if repl is None:
+                continue
+            spare.remove(repl)
+            it = repl
+        kept.append((t, it))
+    return kept, spare
+
+
 def build_exam(db: Session, exam: Exam, rng: random.Random | None = None) -> None:
     """Fill `exam.questions`. Raises NothingToSelect or llm.LLMError; the caller sets the status."""
     rng = rng or random.Random()
@@ -101,6 +118,7 @@ def build_exam(db: Session, exam: Exam, rng: random.Random | None = None) -> Non
     pairs = select(unused, types, exam.requested_count, rng)
     picked_ids = {it.id for _, it in pairs}
     spare = [i for i in unused if i.id not in picked_ids]
+    pairs, spare = _one_per_meaning(pairs, spare)
 
     by_id = {i.id: i for i in all_items}
     index = LessonIndex.build(all_items)

@@ -120,6 +120,16 @@ def _safe_meaning_distractor(c, it, correct_text: str) -> bool:
 
 
 MAX_LEN_RATIO = 2.2
+MIN_CONTENT_WORDS = 2
+
+
+_REFERENCE_WORDS = {"see", "table", "figure", "shown", "page", "slide", "chapter", "section", "above", "below"}
+
+
+def enough_words(text: str) -> bool:
+    """'_____ – _____ apply (see Table 5-2)' leaves nothing to answer from."""
+    words = [w for w in content_words(text.replace(BLANK, " ")) if len(w) >= 4 and w not in _REFERENCE_WORDS]
+    return len(words) >= MIN_CONTENT_WORDS
 
 
 def echo_words(it, fmt: str, stem, correct_text: str) -> set:
@@ -197,10 +207,11 @@ def prepare_mcq(d: Draft, pool: list, rng: random.Random) -> Draft:
     stem = fill_in_stem(it)
     correct_meaning = meaning_text(it) if it.kind == "definition" else ""
     formats = []
-    if stem is not None and not poor_option(it.term):  # numbers / long phrases stand out as answers
+    # numbers / long phrases stand out as answers; a stem needs enough real words to be answerable
+    if stem is not None and not poor_option(it.term) and enough_words(stem):
         formats.append("fill_in")
     if (it.kind == "definition" and visible_chars(correct_meaning) >= MIN_MEANING_CHARS
-            and not mentions(correct_meaning, answer_terms)):
+            and not mentions(correct_meaning, answer_terms) and enough_words(correct_meaning)):
         formats.append("term_meaning")
     if not formats:
         d.failed = "mcq_no_format"
