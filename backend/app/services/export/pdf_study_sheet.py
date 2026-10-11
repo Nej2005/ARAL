@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from app.services.ingestion.quiz import answer_text
 from app.models import Document, Reviewer, SourceItem
 from app.services.export import ReviewerPDF
 from app.services.fidelity import clean_for_display
@@ -33,7 +34,10 @@ def study_sheet_pdf(reviewer: Reviewer, items: list[SourceItem], docs: dict[str,
                 if it.topic:
                     pdf.text_line(it.topic, size=11, bold=True)
             where = doc.page_label(it.page_no)
-            if it.kind == "definition" and it.term:
+            if it.answer_key:
+                pdf.text_line(f"• {clean_for_display(it.body)} — {answer_text(it.answer_key)}  ({where})",
+                              size=10.5, indent=2)
+            elif it.kind == "definition" and it.term:
                 pdf.set_font("Noto", "B", 10.5)
                 pdf.set_x(pdf.l_margin)
                 pdf.multi_cell(0, 5.5, f"{it.term} — {clean_for_display(it.body)}  ({where})",

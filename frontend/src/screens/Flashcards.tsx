@@ -4,7 +4,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { api } from "../api/client";
 import { keys, useAttemptMap, useCard } from "../api/hooks";
-import type { AnswerResult, AttemptMap, Card, Summary } from "../api/types";
+import type { AnswerRef, AnswerResult, AttemptMap, Card, Summary } from "../api/types";
 import { ThemeButton } from "../components/Header";
 import FeedbackBlock from "../components/FeedbackBlock";
 import Icon from "../components/Icon";
@@ -17,7 +17,8 @@ import ExitExam from "../sheets/ExitExam";
 import FinishSheet from "../sheets/FinishSheet";
 import MapSheet from "../sheets/MapSheet";
 
-const LETTERS = "ABCD";
+const LETTERS = "ABCDEFGH";
+const isRight = (a: AnswerRef, id: string) => (a.ids ?? [a.id]).includes(id);
 
 export default function Flashcards() {
   const { id = "" } = useParams();
@@ -141,7 +142,7 @@ export default function Flashcards() {
       if (e.key === "ArrowRight") return answered ? next() : skip();
       if (answered || done) return;
       if (c.question.type === "mcq" && c.question.choices) {
-        const i = "abcd".indexOf(k) >= 0 ? "abcd".indexOf(k) : "1234".indexOf(k);
+        const i = "abcdefgh".indexOf(k) >= 0 ? "abcdefgh".indexOf(k) : "12345678".indexOf(k);
         if (i >= 0 && c.question.choices[i]) pick(c.question.choices[i].id);
       }
       if (c.question.type === "true_false" && (k === "t" || k === "f")) pick(k === "t" ? "true" : "false");
@@ -206,11 +207,11 @@ export default function Flashcards() {
                         let cls = "";
                         let mark: "check" | "x" | null = null;
                         if (fb) {
-                          if (ch.id === fb.correct_answer.id) { cls = "is-correct"; mark = "check"; }
+                          if (isRight(fb.correct_answer, ch.id)) { cls = "is-correct"; mark = "check"; }
                           else if (ch.id === fb.your_answer?.id) { cls = "is-wrong"; mark = "x"; }
                           else cls = "is-dim";
                         } else if (done && c.correct_answer) {
-                          cls = ch.id === c.correct_answer.id ? "is-correct" : "is-dim";
+                          cls = isRight(c.correct_answer, ch.id) ? "is-correct" : "is-dim";
                         }
                         return (
                           <button key={ch.id} className={`choice ${cls}`} disabled={answered || done || answer.isPending} onClick={() => pick(ch.id)}>

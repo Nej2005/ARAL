@@ -134,6 +134,7 @@ export interface Question {
 
 export interface AnswerRef {
   id: string | null;
+  ids?: string[];  // multiple choice: every right choice (an answer key may mark more than one)
   text: string | null;
 }
 

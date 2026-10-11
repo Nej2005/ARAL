@@ -28,7 +28,7 @@ def grade(question_type: str, correct_answer: str, accepted_answers: list[str], 
     """Returns (is_correct, match_note)."""
     response = (response or "").strip()
     if question_type == "mcq":
-        return response == correct_answer, None
+        return response in (accepted_answers or [correct_answer]), None
     if question_type == "true_false":
         return response.lower() in ("true", "false") and response.lower() == correct_answer, None
     # identification

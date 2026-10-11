@@ -28,7 +28,7 @@ function ReviewItem({ card, kind }: { card: SummaryCard; kind: "wrong" | "skippe
         {card.changed_span && (
           <p className="diff"><del>{card.changed_span.to}</del> → <ins>{card.changed_span.from}</ins></p>
         )}
-        <p>{card.why}</p>
+        {card.why && <p>{card.why}</p>}
         {card.why_yours_is_wrong && !card.changed_span && <p className="why2">{card.why_yours_is_wrong}</p>}
         <p className="muted">{card.source.filename?.replace(/\.[^.]+$/, "")} · {card.source.location}</p>
       </div>

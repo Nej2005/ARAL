@@ -7,6 +7,7 @@ import html
 import io
 import re
 
+from app.services.ingestion.quiz import answer_text
 from app.models import Document, Exam, Reviewer, SourceItem
 from app.services.fidelity import BLANK, blank_term, clean_for_display
 from app.services.generation import source_ref
@@ -48,9 +49,10 @@ def exam_csv(exam: Exam, docs: dict[str, Document]) -> str:
         src = source_ref(doc, exp.get("page_no")) if doc and exp.get("page_no") else ""
         front = _h(q.prompt.replace("**", ""))
         if q.type == "mcq":
-            letters = "ABCD"
+            letters = "ABCDEFGH"
+            right = q.accepted_answers or [q.correct_answer]
             front += "<br>" + "<br>".join(f"{letters[k]}. {_h(c['text'])}" for k, c in enumerate(q.choices or []))
-            correct = next((f"{letters[k]}. {c['text']}" for k, c in enumerate(q.choices or []) if c["id"] == q.correct_answer), "")
+            correct = "; ".join(f"{letters[k]}. {c['text']}" for k, c in enumerate(q.choices or []) if c["id"] in right)
         elif q.type == "true_false":
             correct = q.correct_answer.upper()
         else:
@@ -71,6 +73,12 @@ def items_csv(reviewer: Reviewer, items: list[SourceItem], docs: dict[str, Docum
         doc = docs.get(it.document_id)
         src = source_ref(doc, it.page_no) if doc else ""
         body = clean_for_display(it.body)
+        if it.answer_key:
+            key = it.answer_key
+            choices = "".join(f"<br>{_h(l)}) {_h(c)}" for l, c in zip(key.get("labels", []), key.get("choices", [])))
+            rows.append((_h(body) + choices, _h(answer_text(key)) + (f"<br><i>{_h(src)}</i>" if src else ""),
+                         " ".join(["aral", f"reviewer::{_slug(reviewer.title)}"])))
+            continue
         if it.kind == "definition" and it.term:
             front, back = it.term, body
         else:

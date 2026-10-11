@@ -35,11 +35,11 @@ def exam_pdf(exam: Exam, docs: dict[str, Document], with_answer_key: bool = True
             prompt = q.prompt.replace("**", "")
             pdf.text_line(f"{number}. {prompt}", size=10.5)
             if t == "mcq":
-                letters = "ABCD"
+                letters = "ABCDEFGH"
                 for k, ch in enumerate(q.choices or []):
                     pdf.text_line(f"{letters[k]}. {ch['text']}", size=10, indent=8, h=5.2)
-                correct_letter = next((letters[k] for k, ch in enumerate(q.choices or []) if ch["id"] == q.correct_answer), "?")
-                answer = f"{correct_letter}. {next((c['text'] for c in q.choices if c['id'] == q.correct_answer), '')}"
+                right = q.accepted_answers or [q.correct_answer]
+                answer = "; ".join(f"{letters[k]}. {ch['text']}" for k, ch in enumerate(q.choices or []) if ch["id"] in right) or "?"
             elif t == "true_false":
                 pdf.text_line("Answer: ________", size=9.5, indent=8, h=5)
                 answer = q.correct_answer.upper()

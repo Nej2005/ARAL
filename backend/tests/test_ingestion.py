@@ -64,3 +64,50 @@ def test_markdown_term_list_is_read_word_for_word():
                                              "it applies to existing files within the folder only.")
     for e in entries:  # every quote is real text of its section
         assert e.quote in pages[e.page_no - 1].text, e.term
+
+
+def test_answer_key_quiz_is_read_as_written(tmp_path):
+    from app.services.ingestion.quiz import answer_text, read_quiz_pdf
+    from tests.fixtures import build_quiz_pdf
+
+    qs = read_quiz_pdf(build_quiz_pdf(tmp_path / "quiz.pdf"))
+    assert [q.number for q in qs] == [1, 2, 3, 4, 5]
+    assert qs[0].choices == ["NTFS", "ReFS", "FAT32", "exFAT"] and qs[0].correct == [2, 3]  # two bold answers
+    assert answer_text(qs[0].answer_key()) == "C) FAT32; D) exFAT"
+    assert qs[1].question.endswith("cannot delete, write over, or modify data?")  # wrapped line joined
+    assert qs[1].correct == [0]
+    assert qs[2].choices[-1] == "Both a and c" and qs[2].correct == [3]
+    assert qs[3].type == "true_false" and qs[3].answer == "false" and qs[3].section == "True or False"
+    assert qs[4].answer == "true"
+
+
+def test_a_lesson_pdf_is_not_a_quiz(fixture_files):
+    from app.services.ingestion.quiz import read_quiz_pdf
+
+    assert read_quiz_pdf(fixture_files["pdf"]) == []
+
+
+def _l(text, bold=False, x=20.0, page=1):
+    return (page, text, bold, x)
+
+
+def test_quiz_parser_edge_cases():
+    from app.services.ingestion.quiz import parse_quiz_lines
+
+    # an outline with every sub-item bold is not a quiz
+    outline = [_l("1. Types of encryption"), _l("a) Symmetric", True, 30), _l("b) Asymmetric", True, 30)] * 3
+    assert parse_quiz_lines(outline) == []
+
+    # numbering that restarts keeps both parts; a page header between choices doesn't cut a question
+    lines = [
+        _l("1. First question?"), _l("A) One", False, 30), _l("Quiz 12/26", False, 10, 2),
+        _l("B) Two", True, 30, 2), _l("C) Three", False, 30, 2),
+        _l("Test II", False, 10), _l("1. A statement."), _l("True", True, 30),
+        _l("2. A long right answer?"), _l("A) Short", False, 30), _l("B) The right one that", True, 30),
+        _l("wraps onto the next line", True, 34), _l("C) Other", False, 30),
+    ]
+    qs = parse_quiz_lines(lines)
+    assert [(q.number, q.seq) for q in qs] == [(1, 1), (1, 2), (2, 3)]
+    assert qs[0].choices == ["One", "Two", "Three"] and qs[0].correct == [1]
+    assert qs[1].type == "true_false" and qs[1].section == "Test II"
+    assert qs[2].choices[1] == "The right one that wraps onto the next line" and qs[2].correct == [1]

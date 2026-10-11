@@ -114,3 +114,37 @@ def build_empty_pdf(path: Path) -> Path:
     pdf.add_page()
     pdf.output(str(path))
     return path
+
+
+QUIZ = [
+    ("q", "1. What type of file system/s does not support NTFS permissions?"),
+    ("c", "A) NTFS"), ("c", "B) ReFS"), ("cb", "C) FAT32"), ("cb", "D) exFAT"),
+    ("q", "2. What advanced permission is capable to add new folders and add new data at the end of files, "
+          "but otherwise cannot delete, write over, or modify data?"),
+    ("cb", "A) Create folders/append data"), ("c", "B) Create files/write data"),
+    ("c", "C) Change permissions"), ("c", "D) Read extended attributes"),
+    ("q", "3. What does the Enable Windows Server 2008 mode do in DFS namespaces?"),
+    ("c", "A) Allows access-based enumeration"), ("c", "B) Enables Kerberos authentication"),
+    ("c", "C) Increases target capacity"), ("cb", "D) Both a and c"),
+    ("h", "True or False"),
+    ("q", "4. File auditing is enabled by default in Windows Server 2019."), ("ab", "False"),
+    ("q", "5. A SACL is used to audit access attempts to a resource."), ("ab", "True"),
+]
+
+
+def build_quiz_pdf(path: Path, rows=QUIZ) -> Path:
+    """An answer-key quiz: numbered questions, indented choices, the answers in bold."""
+    from app.services.export import FONT_DIR
+
+    pdf = FPDF()
+    pdf.add_font("Noto", "", FONT_DIR / "NotoSans-Regular.ttf")
+    pdf.add_font("Noto", "B", FONT_DIR / "NotoSans-Bold.ttf")
+    pdf.add_page()
+    for kind, text in rows:
+        x = {"h": 10, "q": 16}.get(kind, 24)
+        pdf.set_font("Noto", "B" if kind.endswith("b") else "", 11)
+        pdf.set_x(x)
+        pdf.multi_cell(120, 6, text, new_x="LMARGIN", new_y="NEXT")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pdf.output(str(path))
+    return path

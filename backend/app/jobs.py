@@ -23,7 +23,8 @@ from app.services.ingestion.markdown import read_markdown
 from app.services.ingestion.pdf import extract_pdf
 from app.services.ingestion.ppt_convert import PptConversionFailed, PptConversionUnavailable, convert_ppt_to_pptx
 from app.services.ingestion.pptx import extract_pptx
-from app.services.knowledge import EXTRACTION_VERSION, copy_items, extract_next_window, import_glossary, window_count
+from app.services.ingestion.quiz import read_quiz_pdf
+from app.services.knowledge import EXTRACTION_VERSION, copy_items, extract_next_window, import_glossary, import_quiz, window_count
 
 log = logging.getLogger("aral.jobs")
 
@@ -135,14 +136,15 @@ def _fail(db: Session, obj: Document | Exam, code: str, message: str) -> None:
 
 
 def _read_pages(db: Session, doc: Document):
-    """Returns (pages, glossary). `glossary` is the list of term entries for Markdown/text term lists."""
+    """Returns (pages, glossary, quiz): term entries for Markdown/text term lists, questions for
+    answer-key quizzes."""
     with storage.materialized(db, doc) as path:
         if doc.file_type in ("md", "txt"):
-            return read_markdown(path)
+            return (*read_markdown(path), None)
         if doc.file_type == "pdf":
-            return extract_pdf(path), None
+            return extract_pdf(path), None, read_quiz_pdf(path)
         if doc.file_type == "pptx":
-            return extract_pptx(path), None
+            return extract_pptx(path), None, None
         if doc.file_type == "ppt":
             try:
                 pptx_path = convert_ppt_to_pptx(path)
@@ -150,7 +152,7 @@ def _read_pages(db: Session, doc: Document):
                 raise IngestError("PPT_CONVERSION_UNAVAILABLE", str(e)) from e
             except PptConversionFailed as e:
                 raise IngestError("PPT_CONVERSION_FAILED", str(e)) from e
-            return extract_pptx(pptx_path), None
+            return extract_pptx(pptx_path), None, None
     raise IngestError("UNSUPPORTED_FILE_TYPE", f"Unsupported file type: {doc.file_type}")
 
 
@@ -164,7 +166,7 @@ def _run_step(db: Session, doc: Document) -> bool:
         # Step A: read the file into pages (fast, no Gemini).
         if not storage.has_file(db, doc):
             raise IngestError("FILE_MISSING", "The uploaded file is no longer stored. Upload it again.")
-        pages, glossary = _read_pages(db, doc)
+        pages, glossary, quiz = _read_pages(db, doc)
         total_chars = sum(len((p.text or "").strip()) for p in pages)
         if total_chars < MIN_TEXT_CHARS:
             raise IngestError("NO_EXTRACTABLE_TEXT",
@@ -192,6 +194,14 @@ def _run_step(db: Session, doc: Document) -> bool:
             doc.extraction_progress = window_count(doc)
             db.commit()
             log.info("copied %d items from %s to %s (same text)", n, twin.id, doc.id)
+            return True
+
+        # An answer-key quiz (numbered questions, bold answers) is asked exactly as written, without Gemini.
+        if quiz:
+            n = import_quiz(db, doc, quiz)
+            doc.extraction_progress = window_count(doc)
+            db.commit()
+            log.info("imported %d quiz questions from %s without Gemini", n, doc.filename)
             return True
 
         # A term list ("**Term** - definition" bullets) is read word for word, without Gemini.

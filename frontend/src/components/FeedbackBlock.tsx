@@ -16,7 +16,10 @@ export default function FeedbackBlock({ fb, focus = false, spelled }: { fb: Feed
     <div className="fb" ref={ref} tabIndex={-1} aria-live="polite">
       <div className="vline">
         {fb.is_correct ? (
-          <span className="verdict ok"><Icon name="check" />Correct</span>
+          <>
+            <span className="verdict ok"><Icon name="check" />Correct</span>
+            {(fb.correct_answer.ids?.length ?? 0) > 1 && <span>Answer: <b>{fb.correct_answer.text}</b></span>}
+          </>
         ) : (
           <>
             <span className="verdict bad"><Icon name="x" />Wrong</span>
@@ -30,7 +33,7 @@ export default function FeedbackBlock({ fb, focus = false, spelled }: { fb: Feed
           <del>{fb.changed_span.to}</del> → <ins>{fb.changed_span.from}</ins>
         </p>
       )}
-      <p>{fb.why}</p>
+      {fb.why && <p>{fb.why}</p>}
       {!fb.is_correct && fb.why_yours_is_wrong && !fb.changed_span && <p className="why2">{fb.why_yours_is_wrong}</p>}
       {!fb.is_correct && fb.why_yours_is_wrong && fb.changed_span && (
         <p className="why2">{fb.why_yours_is_wrong.replace(/^The statement changed '[^']*' to '[^']*'\.\s*/, "")}</p>

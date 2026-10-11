@@ -15,7 +15,8 @@ from app.services.generation import Draft, TYPE_ORDER
 from app.services.generation.batch import GenerationBatch, run_batches
 from app.services.generation.identification import build_identification
 from app.services.generation.multiple_choice import finish_mcq, prepare_mcq, same_meaning
-from app.services.generation.selector import select
+from app.services.generation.quiz import build_from_answer_key
+from app.services.generation.selector import fits, fits_any, select
 from app.services.generation.true_false import build_false, build_true, statement_text
 from app.services.scope import filter_items
 
@@ -26,6 +27,11 @@ class NothingToSelect(Exception):
     def __init__(self, unused_outside_scope: int):
         super().__init__("All items reviewed")
         self.unused_outside_scope = unused_outside_scope
+
+
+def _quiz(it) -> dict | None:
+    """The answer key of a quiz question, None for lesson items."""
+    return getattr(it, "answer_key", None)
 
 
 def _assign_tf(drafts: list[Draft], rng: random.Random) -> None:
@@ -49,14 +55,16 @@ def _make_drafts(pairs: list[tuple[str, SourceItem]], docs: dict[str, Document],
     drafts = []
     for k, (t, it) in enumerate(pairs):
         d = Draft(ref=f"q{start_ref + k + 1}", type=t, item=it, doc=docs[it.document_id], best_effort=best_effort)
-        if t == "identification":
+        if _quiz(it):
+            build_from_answer_key(d)
+        elif t == "identification":
             build_identification(d)
         elif t == "mcq":
             prepare_mcq(d, pool, rng, prefer_meaning=bool(twins and it.id in twins))
         drafts.append(d)
-    _assign_tf([d for d in drafts if d.type == "true_false"], rng)
+    _assign_tf([d for d in drafts if d.type == "true_false" and not d.verbatim], rng)
     for d in drafts:
-        if d.type == "true_false" and d.is_true:
+        if d.type == "true_false" and d.is_true and not d.verbatim:
             build_true(d)
     return drafts
 
@@ -68,7 +76,7 @@ def _apply_batch(drafts: list[Draft], result: GenerationBatch, by_id, docs, inde
     fals = {f.question_ref: f for f in result.falsifications}
     rats = {r.question_ref: r.rationale for r in result.rationales}
     for d in drafts:
-        if d.failed:
+        if d.failed or d.verbatim:
             continue
         if d.type == "mcq":
             finish_mcq(d, picks.get(d.ref, []), gens.get(d.ref, []), by_id, docs, index, rng)
@@ -93,8 +101,8 @@ def _one_per_meaning(pairs: list, spare: list) -> tuple[list, list]:
     kept: list = []
     spare = list(spare)
     for t, it in pairs:
-        if any(same_meaning(it, k) for _, k in kept):
-            repl = next((s for s in spare if (t != "identification" or s.kind == "definition")
+        if not _quiz(it) and any(same_meaning(it, k) for _, k in kept if not _quiz(k)):
+            repl = next((s for s in spare if fits(s, t)
                          and not any(same_meaning(s, k) for _, k in kept)), None)
             if repl is None:
                 continue
@@ -148,7 +156,7 @@ def build_exam(db: Session, exam: Exam, rng: random.Random | None = None) -> Non
     twins: dict[str, list[SourceItem]] = {}
     if best_effort:
         # "All items": everything in the scope, reviewed or not, twins included (asked by name instead).
-        pool = [i for i in scoped if set(types) != {"identification"} or i.kind == "definition"]
+        pool = [i for i in scoped if fits_any(i, types)]
         if not pool:
             raise NothingToSelect(0)
         pairs = select(pool, types, len(pool), rng)
@@ -165,14 +173,15 @@ def build_exam(db: Session, exam: Exam, rng: random.Random | None = None) -> Non
         pairs, spare = _one_per_meaning(pairs, spare)
 
     by_id = {i.id: i for i in all_items}
-    index = LessonIndex.build(all_items)
+    lesson = [i for i in all_items if not _quiz(i)]  # quiz questions (often false statements) aren't lesson text
+    index = LessonIndex.build(lesson)
     other_statements = {norm_cmp(statement_text(Draft(ref="", type="true_false", item=i, doc=docs[i.document_id])))
-                        for i in all_items}
-    lesson_terms = sorted({i.term for i in all_items if i.term}, key=str.casefold)
+                        for i in lesson}
+    lesson_terms = sorted({i.term for i in lesson if i.term}, key=str.casefold)
 
-    drafts = _make_drafts(pairs, docs, all_items, rng, best_effort=best_effort, twins=set(twins))
+    drafts = _make_drafts(pairs, docs, lesson, rng, best_effort=best_effort, twins=set(twins))
     _accept_twin_names(drafts, twins)
-    needs_llm = [d for d in drafts if not d.failed]
+    needs_llm = [d for d in drafts if not d.failed and not d.verbatim]
     needs_llm.sort(key=lambda d: not (d.type == "true_false" and d.is_true is False))  # Gemini-only work first
     label = f"exam={exam.id[:8]}"
     result = (run_batches(needs_llm, by_id, docs, lesson_terms, label, optional=best_effort)
@@ -196,7 +205,7 @@ def build_exam(db: Session, exam: Exam, rng: random.Random | None = None) -> Non
         replacements: list[tuple[str, SourceItem]] = []
         for d in failed:
             taken = kept + [r for _, r in replacements]
-            cand = next((x for x in spare if (d.type != "identification" or x.kind == "definition")
+            cand = next((x for x in spare if fits(x, d.type)
                          and not any(same_meaning(x, k) for k in taken)), None)
             if cand is None:
                 continue
@@ -204,10 +213,13 @@ def build_exam(db: Session, exam: Exam, rng: random.Random | None = None) -> Non
             replacements.append((d.type, cand))
         if not replacements:
             break
-        redo = _make_drafts(replacements, docs, all_items, rng, start_ref=1000 * (round_no + 1))
+        redo = _make_drafts(replacements, docs, lesson, rng, start_ref=1000 * (round_no + 1))
+        redo_llm = [d for d in redo if not d.failed and not d.verbatim]
         left = llm.remaining_seconds()
-        if left is None or left > 100:
-            res2 = run_batches(redo, by_id, docs, lesson_terms, f"{label} redo{round_no + 1}")
+        if not redo_llm:
+            res2 = GenerationBatch()
+        elif left is None or left > 100:
+            res2 = run_batches(redo_llm, by_id, docs, lesson_terms, f"{label} redo{round_no + 1}")
         else:
             log.info("rebuilding %d questions without Gemini (%.0fs left in this step)", len(redo), left)
             res2 = GenerationBatch()
@@ -215,8 +227,16 @@ def build_exam(db: Session, exam: Exam, rng: random.Random | None = None) -> Non
         drafts += redo
     drafts = [d for d in drafts if not d.failed]
 
-    # Printable order: grouped by type (MCQ, T/F, Identification), as on a school exam.
-    drafts.sort(key=lambda d: TYPE_ORDER[d.type])
+    # A quiz keeps its own order (file by file); generated questions follow, grouped by type
+    # (MCQ, T/F, Identification) as on a school exam.
+    doc_rank = {doc_id: k for k, doc_id in enumerate(docs)}
+
+    def order(d: Draft):
+        if d.verbatim:
+            return (0, doc_rank.get(d.item.document_id, 0), (_quiz(d.item) or {}).get("seq", 0))
+        return (1, TYPE_ORDER[d.type], 0)
+
+    drafts.sort(key=order)
     for pos, d in enumerate(drafts, start=1):
         db.add(Question(
             exam_id=exam.id, source_item_id=d.item.id, type=d.type, position=pos, prompt=d.prompt,

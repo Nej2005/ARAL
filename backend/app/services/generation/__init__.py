@@ -30,6 +30,7 @@ class Draft:
     echo_words: list[str] = field(default_factory=list)  # answer words the question shows (must not single it out)
     needs_generated: int = 0
     best_effort: bool = False  # "All items" exams: never drop an item, keep any hint as small as possible
+    verbatim: bool = False  # copied from an answer-key quiz: no Gemini, no checks, nothing reworded
     failed: str | None = None
 
 

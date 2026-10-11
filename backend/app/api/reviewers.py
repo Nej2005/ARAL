@@ -18,6 +18,7 @@ from app.services.coverage import active_items, doc_item_counts, used_item_ids
 from app.services.export.anki_csv import items_csv
 from app.services.export.pdf_study_sheet import study_sheet_pdf
 from app.services.generation.selector import availability as compute_availability
+from app.services.generation.selector import fits_any
 from app.services.scope import filter_items, validate_scope
 
 router = APIRouter(prefix="/reviewers", tags=["reviewers"])
@@ -240,7 +241,7 @@ def availability(reviewer_id: str, body: AvailabilityRequest, db: Session = Depe
     used = used_item_ids(db, r)
     scoped = filter_items(items, scope)
     av = compute_availability(scoped, items, used, list(body.types))
-    in_scope = sum(1 for i in scoped if set(body.types) != {"identification"} or i.kind == "definition")
+    in_scope = sum(1 for i in scoped if fits_any(i, body.types))
     return {
         "total_items": av.total_items,
         "used_items": av.used_items,

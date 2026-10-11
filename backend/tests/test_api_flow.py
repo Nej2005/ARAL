@@ -538,13 +538,14 @@ def test_all_items_exam_covers_everything_even_reviewed_items(client, tmp_path, 
     assert first["status"] == "ready"
 
     av = client.post(f"{API}/reviewers/{r['id']}/availability", json={"types": ["mcq"]}).json()
-    assert av["max_count_for_types"] == 4 and av["all_items_count"] == 7
+    used = first["actual_count"]  # strict sets may drop a term that would hint
+    assert av["max_count_for_types"] == 7 - used and av["all_items_count"] == 7
 
     e = make_exam(client, r["id"], {"types": ["mcq"], "all_items": True})
     assert e["status"] == "ready" and e["all_items"] is True
     assert e["requested_count"] == e["actual_count"] == d["item_count"] == 7
     # a full review doesn't use up the unreviewed items
-    assert client.get(f"{API}/reviewers/{r['id']}").json()["used_items"] == 3
+    assert client.get(f"{API}/reviewers/{r['id']}").json()["used_items"] == used
 
     # Gemini out of quota: the set is still built, from the pre-computed options
     fake_llm.fail_with = llm.LLMQuotaExceeded("limit")
@@ -575,3 +576,36 @@ def test_count_is_required_unless_all_items(client, fixture_files):
     r, *_ = _ready_reviewer(client, fixture_files)
     res = client.post(f"{API}/reviewers/{r['id']}/exams", json={"types": ["mcq"]})
     assert res.status_code == 422
+
+
+def test_answer_key_quiz_imports_word_for_word_in_order(client, tmp_path, fake_llm):
+    """A quiz PDF with bold answers: no Gemini, wording, choices and their order kept, either bold answer right."""
+    from tests.fixtures import QUIZ, build_quiz_pdf
+
+    d = upload(client, build_quiz_pdf(tmp_path / "Quiz A.pdf"))
+    assert d["status"] == "ready" and d["item_count"] == 5 and d["items_by_kind"]["quiz"] == 5
+    assert fake_llm.calls == []
+    r = client.post(f"{API}/reviewers", json={"title": "Quiz A", "document_ids": [d["id"]]}).json()
+    av = client.post(f"{API}/reviewers/{r['id']}/availability", json={"types": ["mcq"]}).json()
+    assert av["max_count_for_types"] == 3  # True/False questions stay True/False
+    e = make_exam(client, r["id"], {"types": ["mcq", "true_false"], "all_items": True})
+    assert e["status"] == "ready" and e["actual_count"] == 5 and fake_llm.calls == []
+
+    for _ in range(2):  # the quiz order and the choice order hold on every attempt
+        a = client.post(f"{API}/exams/{e['id']}/attempts").json()
+        card = client.get(f"{API}/attempts/{a['attempt_id']}/cards/1").json()
+        q = card["question"]
+        assert q["prompt"] == QUIZ[0][1].split(". ", 1)[1]
+        assert [c["text"] for c in q["choices"]] == ["NTFS", "ReFS", "FAT32", "exFAT"]
+    exfat = q["choices"][3]["id"]
+    fb = client.post(f"{API}/attempts/{a['attempt_id']}/answer",
+                     json={"question_id": q["id"], "response": exfat}).json()["feedback"]
+    assert fb["is_correct"] is True and fb["correct_answer"]["text"] == "FAT32; exFAT"
+    assert len(fb["correct_answer"]["ids"]) == 2 and fb["why"] == ""
+    card3 = client.get(f"{API}/attempts/{a['attempt_id']}/cards/3").json()["question"]
+    assert [c["text"] for c in card3["choices"]][-1] == "Both a and c"
+    card4 = client.get(f"{API}/attempts/{a['attempt_id']}/cards/4").json()["question"]
+    assert card4["type"] == "true_false" and card4["prompt"].startswith("File auditing")
+    fb4 = client.post(f"{API}/attempts/{a['attempt_id']}/answer",
+                      json={"question_id": card4["id"], "response": "true"}).json()["feedback"]
+    assert fb4["is_correct"] is False and fb4["correct_answer"]["text"] == "false"

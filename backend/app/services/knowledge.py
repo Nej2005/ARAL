@@ -193,6 +193,7 @@ def copy_items(db: Session, src: Document, dest: Document) -> int:
             document_id=dest.id, page_no=it.page_no, kind=it.kind, term=it.term, aliases=list(it.aliases or []),
             body=it.body, source_quote=it.source_quote, quote_start=it.quote_start, quote_end=it.quote_end,
             topic=it.topic, topic_key=it.topic_key,
+            answer_key=dict(it.answer_key) if it.answer_key else None,
         ))
         n += 1
     return n
@@ -227,3 +228,31 @@ def import_glossary(db: Session, doc: Document, entries) -> int:
             topic=v.topic, topic_key=v.topic_key,
         ))
     return len(kept)
+
+
+def _locate(text: str, quote: str) -> int:
+    """Where `quote` starts in `text`, ignoring line breaks and zero-width spaces between its words."""
+    import re
+
+    words = quote.split()
+    if not words:
+        return -1
+    m = re.search(r"[\s\u200b\u200c\u200d\u2060\ufeff]+".join(map(re.escape, words)), text)
+    return m.start() if m else -1
+
+
+def import_quiz(db: Session, doc: Document, entries) -> int:
+    """Store an answer-key quiz's questions exactly as written (no LLM), one item per question."""
+    from app.services.fidelity import norm_cmp
+
+    pages = {p.page_no: p for p in db.query(DocumentPage).filter(DocumentPage.document_id == doc.id)}
+    for e in entries:
+        page = pages.get(e.page_no)
+        start = _locate(page.text, e.question) if page else -1
+        topic = e.section or ("True or False" if e.type == "true_false" else "Multiple choice")
+        db.add(SourceItem(
+            document_id=doc.id, page_no=e.page_no, kind="quiz", term=None, aliases=[], body=e.question,
+            source_quote=e.question, quote_start=max(start, 0), quote_end=max(start, 0) + len(e.question),
+            topic=topic, topic_key=norm_cmp(topic), answer_key=e.answer_key(),
+        ))
+    return len(entries)

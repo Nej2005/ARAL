@@ -19,11 +19,14 @@ def start_attempt(db: Session, exam: Exam, kind: str = "full", question_ids: lis
     rng = rng or random.Random()
     qs = {q.id: q for q in exam.questions}
     ids = list(question_ids) if question_ids is not None else list(qs)
-    rng.shuffle(ids)
+    if ids and all(_fixed(qs[i]) for i in ids):
+        ids.sort(key=lambda i: qs[i].position)  # a quiz is reviewed in its own order
+    else:
+        rng.shuffle(ids)
     choice_orders = {}
     for qid in ids:
         q = qs[qid]
-        if q.type == "mcq" and q.choices:
+        if q.type == "mcq" and q.choices and not _fixed(q):
             order = [c["id"] for c in q.choices]
             rng.shuffle(order)
             choice_orders[qid] = order
@@ -43,6 +46,16 @@ def start_attempt(db: Session, exam: Exam, kind: str = "full", question_ids: lis
 
 
 # ---------------------------------------------------------------- helpers
+
+
+def _fixed(q: Question) -> bool:
+    """Quiz questions keep their choice order ('Both a and c' must still point at A and C)."""
+    return bool((q.explanation or {}).get("fixed_order"))
+
+
+def correct_ids(q: Question) -> list[str]:
+    """Every right choice of a multiple-choice question (an answer key may bold more than one)."""
+    return list(q.accepted_answers or []) or [q.correct_answer]
 
 
 def _answers_by_q(attempt: Attempt) -> dict[str, Answer]:
@@ -113,7 +126,8 @@ def source_payload(db: Session, q: Question) -> dict:
 
 def correct_answer_payload(q: Question) -> dict:
     if q.type == "mcq":
-        return {"id": q.correct_answer, "text": _choice_text(q, q.correct_answer)}
+        ids = correct_ids(q)
+        return {"id": ids[0], "ids": ids, "text": "; ".join(_choice_text(q, i) or "" for i in ids)}
     return {"id": None, "text": q.correct_answer}
 
 

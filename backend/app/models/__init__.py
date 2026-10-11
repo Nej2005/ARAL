@@ -150,7 +150,7 @@ class SourceItem(Base):
         String(32), ForeignKey("documents.id", ondelete="CASCADE"), index=True
     )
     page_no: Mapped[int] = mapped_column(Integer)
-    kind: Mapped[str] = mapped_column(String(16))  # definition | fact
+    kind: Mapped[str] = mapped_column(String(16))  # definition | fact | quiz
     term: Mapped[str | None] = mapped_column(Text, nullable=True)
     aliases: Mapped[list] = mapped_column(JSON, default=list)
     body: Mapped[str] = mapped_column(Text)
@@ -159,6 +159,8 @@ class SourceItem(Base):
     quote_end: Mapped[int] = mapped_column(Integer, default=0)
     topic: Mapped[str | None] = mapped_column(Text, nullable=True)
     topic_key: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    # kind "quiz": a question from an answer-key quiz, asked exactly as written (ingestion/quiz.py)
+    answer_key: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

@@ -18,6 +18,7 @@ from app.services.attempts import exam_scores
 from app.services.coverage import active_items, used_item_ids
 from app.services.export.anki_csv import exam_csv
 from app.services.export.pdf_exam import exam_pdf
+from app.services.generation.selector import fits_any
 from app.services.scope import filter_items
 
 router = APIRouter(tags=["exams"])
@@ -60,9 +61,9 @@ def _start(db: Session, r: Reviewer, types: list[str], count: int, scope,
     _check_ready(r)
     items = active_items(db, r)
     if all_items:
-        # Every item in the scope, reviewed or not; Identification can only use definitions.
+        # Every item in the scope, reviewed or not, that can be asked as one of the chosen types.
         scoped = filter_items(items, scope)
-        eligible = [i for i in scoped if set(types) != {"identification"} or i.kind == "definition"]
+        eligible = [i for i in scoped if fits_any(i, types)]
         if not eligible:
             raise AppError(409, "ALL_ITEMS_REVIEWED", "There are no items to put in this exam.", unused_outside_scope=0)
         if len(eligible) > MAX_ALL_ITEMS:
@@ -79,9 +80,10 @@ def _start(db: Session, r: Reviewer, types: list[str], count: int, scope,
                        "Every item in this reviewer has been part of an exam." if not outside
                        else "Every item in the selected part has been part of an exam.",
                        unused_outside_scope=outside)
-    if not all_items and set(types) == {"identification"} and not any(i.kind == "definition" for i in unused_scoped):
-        raise AppError(409, "ALL_ITEMS_REVIEWED", "No unused definitions are left for Identification.",
-                       unused_outside_scope=0)
+    if not all_items and not any(fits_any(i, types) for i in unused_scoped):
+        raise AppError(409, "ALL_ITEMS_REVIEWED",
+                       "No unused definitions are left for Identification." if set(types) == {"identification"}
+                       else "No unused items fit the chosen question types.", unused_outside_scope=0)
     exam = Exam(reviewer_id=r.id, question_types=list(types), requested_count=count, scope=scope,
                 coverage_epoch=r.coverage_epoch, parent_exam_id=parent.id if parent else None, status="generating",
                 all_items=all_items)
