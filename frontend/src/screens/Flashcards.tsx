@@ -48,6 +48,11 @@ export default function Flashcards() {
     [setParams],
   );
 
+  // Pin the starting card in the URL right away: answering it must not move you on before the feedback shows.
+  useEffect(() => {
+    if (indexParam < 1 && firstOpen !== null) setParams({ i: String(firstOpen) }, { replace: true });
+  }, [indexParam, firstOpen, setParams]);
+
   useEffect(() => {
     document.getElementById("app")?.classList.add("fit");
     return () => document.getElementById("app")?.classList.remove("fit");
