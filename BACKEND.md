@@ -525,7 +525,7 @@ all cards answered ──► summary            Finish (with skipped cards) ─�
 - **Next after the last card:** if skipped cards remain, the frontend jumps to the first one (`next_unanswered_index` is included in every card and feedback response). If none remain, the attempt is already complete.
 - **Question map:** `GET /attempts/{id}` returns the status of each card (`unanswered` / `correct` / `wrong`, without content), so the frontend can show a grid of numbered cards to jump to.
 - **No answers leak:** a card's correct answer and feedback are sent only after that card is answered, or after the attempt is completed.
-- **Resumable:** opening an in-progress attempt continues at `last_viewed_index`.
+- **Resumable:** opening an in-progress attempt continues at the **first unanswered card** (so a quiz always runs in its own order, 1, 2, 3…); a finished one opens at `last_viewed_index`. A refresh keeps the current card (`?i=` in the URL).
 
 ### 10.2 Grading — `grading.py` (runs on every answer)
 - **MCQ:** compare the chosen choice id with `correct_answer`.

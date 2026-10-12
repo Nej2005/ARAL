@@ -31,9 +31,13 @@ export default function Flashcards() {
   const [justAnswered, setJustAnswered] = useState(false);
   const identInput = useRef<HTMLInputElement>(null);
 
-  // The card index lives in the URL (?i=) so refresh / back keep the place; defaults to where you left off.
+  // The card index lives in the URL (?i=) so refresh / back keep the place. Opening a set starts at the
+  // first card not answered yet, so a quiz always runs in its own order (1, 2, 3…); a finished one at the last card seen.
   const indexParam = Number(params.get("i"));
-  const index = indexParam >= 1 ? indexParam : map.data?.last_viewed_index ?? null;
+  const firstOpen = map.data
+    ? map.data.cards.find((x) => x.status === "unanswered")?.index ?? map.data.last_viewed_index
+    : null;
+  const index = indexParam >= 1 ? indexParam : firstOpen;
   const card = useCard(id, index);
 
   const goTo = useCallback(
