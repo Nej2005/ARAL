@@ -43,6 +43,7 @@ export default function FeedbackBlock({ fb, focus = false, spelled }: { fb: Feed
           <Icon name="chev" />Source · {fb.source.filename ? `${fb.source.filename.replace(/\.[^.]+$/, "")} · ` : ""}{fb.source.location}
         </summary>
         <blockquote>{fb.source.quote}</blockquote>
+        {fb.source.disagrees && <p className="fine"><Icon name="warn" />Answer key and lesson differ</p>}
       </details>
     </div>
   );

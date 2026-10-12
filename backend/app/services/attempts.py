@@ -113,6 +113,16 @@ def public_question(attempt: Attempt, q: Question) -> dict:
 
 def source_payload(db: Session, q: Question) -> dict:
     exp = q.explanation or {}
+    lesson = exp.get("lesson")
+    if lesson:  # a quiz question backed by its lesson: the lesson's own words (one passage per line)
+        return {
+            "quote": "\n".join(lesson.get("passages") or []),
+            "document_id": None,
+            "filename": lesson.get("filename"),
+            "page_no": lesson.get("page_no"),
+            "location": lesson.get("location"),
+            "disagrees": bool(lesson.get("disagrees")),
+        }
     doc = db.get(Document, exp.get("document_id")) if exp.get("document_id") else None
     page_no = exp.get("page_no")
     return {

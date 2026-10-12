@@ -202,7 +202,8 @@ details.src summary{cursor:pointer;list-style:none;display:inline-flex;align-ite
 details.src summary::-webkit-details-marker{display:none}
 details.src summary svg{width:14px;height:14px}
 details.src[open] summary svg{transform:rotate(90deg)}
-details.src blockquote{margin:6px 0 0;padding:12px 14px;border:1px solid var(--rule);background:var(--bg);font-size:var(--t-sm)}
+details.src blockquote{margin:6px 0 0;padding:12px 14px;border:1px solid var(--rule);background:var(--bg);font-size:var(--t-sm);white-space:pre-line}
+details.src .fine{display:flex;align-items:center;gap:6px;margin-top:6px}
 .fc-actions{display:flex;gap:10px;align-items:center;padding-block:12px calc(12px + env(safe-area-inset-bottom,0px))}
 .fc-actions .grow{flex:1}
 .fc-actions .next{min-width:140px}

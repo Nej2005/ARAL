@@ -609,3 +609,25 @@ def test_answer_key_quiz_imports_word_for_word_in_order(client, tmp_path, fake_l
     fb4 = client.post(f"{API}/attempts/{a['attempt_id']}/answer",
                       json={"question_id": card4["id"], "response": "true"}).json()["feedback"]
     assert fb4["is_correct"] is False and fb4["correct_answer"]["text"] == "false"
+
+
+def test_quiz_answer_cites_its_lesson(client, tmp_path, fake_llm, session):
+    """A quiz linked to its lesson (samples/link_quiz_lesson.py) shows the lesson's words as the source."""
+    from app.models import SourceItem
+    from tests.fixtures import build_quiz_pdf
+
+    d = upload(client, build_quiz_pdf(tmp_path / "Quiz.pdf"))
+    first = session.query(SourceItem).filter(SourceItem.document_id == d["id"]).order_by(SourceItem.quote_start).first()
+    lesson = {"filename": "mod4.pdf", "page_no": 21, "location": "p. 21", "disagrees": True,
+              "passages": ["A file or folder that is moved or copied ... all permissions are removed.", "Second bullet."]}
+    first.answer_key = {**first.answer_key, "lesson": lesson}
+    session.commit()
+    r = client.post(f"{API}/reviewers", json={"title": "Quiz", "document_ids": [d["id"]]}).json()
+    e = make_exam(client, r["id"], {"types": ["mcq", "true_false"], "all_items": True})
+    a = client.post(f"{API}/exams/{e['id']}/attempts").json()
+    q = client.get(f"{API}/attempts/{a['attempt_id']}/cards/1").json()["question"]
+    assert q["prompt"] == first.body
+    src = client.post(f"{API}/attempts/{a['attempt_id']}/answer",
+                      json={"question_id": q["id"], "response": q["choices"][0]["id"]}).json()["feedback"]["source"]
+    assert src["filename"] == "mod4.pdf" and src["location"] == "p. 21" and src["disagrees"] is True
+    assert src["quote"] == "A file or folder that is moved or copied ... all permissions are removed.\nSecond bullet."

@@ -144,6 +144,7 @@ export interface Source {
   filename: string | null;
   page_no: number | null;
   location: string | null;
+  disagrees?: boolean;  // the answer key and the lesson passage say different things
 }
 
 export interface Feedback {

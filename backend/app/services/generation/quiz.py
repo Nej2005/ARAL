@@ -14,6 +14,8 @@ def build_from_answer_key(d: Draft) -> Draft:
     d.explanation = {"source_quote": it.source_quote, "document_id": it.document_id, "page_no": it.page_no,
                      "changed_span": None, "format": "answer_key", "fixed_order": True,
                      "quiz_no": key.get("number")}
+    if key.get("lesson"):  # the lesson passage that backs the answer (samples/link_quiz_lesson.py)
+        d.explanation["lesson"] = key["lesson"]
     if key.get("type") == "true_false":
         d.is_true = key.get("answer") == "true"
         d.correct_answer = key.get("answer") or ""
