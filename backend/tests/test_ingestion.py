@@ -111,3 +111,37 @@ def test_quiz_parser_edge_cases():
     assert qs[0].choices == ["One", "Two", "Three"] and qs[0].correct == [1]
     assert qs[1].type == "true_false" and qs[1].section == "Test II"
     assert qs[2].choices[1] == "The right one that wraps onto the next line" and qs[2].correct == [1]
+
+
+def test_quiz_choices_after_a_list_marker_and_part_headings(tmp_path):
+    """'• a. choice' with only the choice in bold; a bold Part heading beats the instruction line under it."""
+    from app.services.ingestion.quiz import parse_quiz_lines, read_quiz_pdf
+    from tests.fixtures import build_quiz_pdf
+
+    rows = [
+        ("q", "1. Which scenario is a use case for a VPN gateway?"),
+        ("c", "a. communicating between Azure resources"),
+        ("cb", "b. connecting an on-premises datacenter to an Azure virtual network"),
+        ("c", "c. filtering outbound network traffic"),
+        ("q", "2. Which two services are provided by Microsoft Entra?"),
+        ("cb", "a. authentication"), ("c", "b. data encryption"), ("c", "c. name resolution"),
+        ("cb", "d. single sign-on (SSO)"),
+        ("q", "3. Availability zones are physically separate datacenters within an Azure region."),
+        ("cb", "A. True"), ("c", "B. False"),
+    ]
+    qs = read_quiz_pdf(build_quiz_pdf(tmp_path / "quiz.pdf", rows, marker="•"))
+    assert [q.correct for q in qs] == [[1], [0, 3], [0]]
+    assert qs[0].choices[1] == "connecting an on-premises datacenter to an Azure virtual network"
+    assert qs[2].choices == ["True", "False"]
+
+    lines = [_l("Part III: True or False", True, 10), _l("Choose A if the statement is True, otherwise B if False.", False, 10),
+             _l("53. Increasing compute capacity is called vertical scaling."), _l("A. True", True, 30), _l("B. False", False, 30),
+             _l("54. Another statement."), _l("A. True", False, 30), _l("B. False", True, 30),
+             _l("55. A third statement."), _l("A. True", True, 30), _l("B. False", False, 30)]
+    assert {q.section for q in parse_quiz_lines(lines)} == {"Part III: True or False"}
+
+    # a bold page header or title above the real heading doesn't hide it
+    lines = [_l("ACME Quiz", True, 10), _l("True or False", False, 10),
+             _l("1. One statement."), _l("True", True, 30), _l("2. Two statement."), _l("False", True, 30),
+             _l("3. Three statement."), _l("True", True, 30)]
+    assert {q.section for q in parse_quiz_lines(lines)} == {"True or False"}

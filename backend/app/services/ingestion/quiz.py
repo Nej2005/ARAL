@@ -25,6 +25,10 @@ QUIZ_MIN_QUESTIONS = 3
 _QUESTION = re.compile(r"^(\d{1,3})[.)]\s*(.+)$")
 _CHOICE = re.compile(r"^([A-Ha-h])[.)]\s+(.+)$")
 _TF = re.compile(r"^(true|false)\.?$", re.IGNORECASE)
+_MARKER = re.compile("[\u25cb\u25e6\u2022\u25cf\u25aa\u25a0\u25a1\u25ef\uf0b7\uf0a7\\-\u2013]")
+_LONE_MARKER = re.compile("[\u25cb\u25e6\u2022\u25cf\u25aa\u25a0\u25a1\u25ef\uf0b7\uf0a7\\-\u2013o]")
+# "Choose A if the statement is True, otherwise B if False." — an instruction, not a heading to keep
+_INSTRUCTION = re.compile(r"^\S+(?:\s+\S+){5,}[.!]$")
 _INVISIBLE = re.compile(r"[​‌‍⁠﻿]")
 
 
@@ -74,11 +78,17 @@ def _lines(path: str | Path) -> list[tuple[int, str, bool, float]]:
         for pno, page in enumerate(doc, start=1):
             for block in page.get_text("dict")["blocks"]:
                 for line in block.get("lines", []):
-                    spans = [s for s in line["spans"] if _clean(s["text"])]
-                    if not spans:
+                    raw = list(line["spans"])
+                    # a list marker ("○ a. …") is drawn in the regular font even when the choice is bold:
+                    # it is left out, together with the spacing after it; other spacing is kept as drawn
+                    marked = [i for i, sp in enumerate(raw) if _clean(sp["text"])]
+                    if len(marked) > 1 and _MARKER.fullmatch(_clean(raw[marked[0]]["text"])):
+                        raw = raw[marked[1]:]
+                    spans = [sp for sp in raw if _clean(sp["text"])]
+                    text = _clean("".join(sp["text"] for sp in raw))
+                    if not spans or _LONE_MARKER.fullmatch(text):  # a bullet drawn on a line of its own
                         continue
-                    text = _clean("".join(s["text"] for s in line["spans"]))
-                    bold = all((s["flags"] & 16) or "bold" in s["font"].lower() for s in spans)
+                    bold = all((sp["flags"] & 16) or "bold" in sp["font"].lower() for sp in spans)
                     out.append((pno, text, bold, line["bbox"][0]))
     return out
 
@@ -89,7 +99,9 @@ def parse_quiz_lines(lines: list[tuple[int, str, bool, float]]) -> list[QuizEntr
     section: str | None = None
     in_question = False  # still reading the question's wrapped lines
     left = 0.0  # where the question number starts; a wrapped choice is indented past it, a heading is not
+    last_was_heading = False
     for pno, text, bold, x0 in lines:
+        after_heading, last_was_heading = last_was_heading, False
         m = _QUESTION.match(text)
         if m and not _CHOICE.match(text):
             cur = QuizEntry(page_no=pno, number=int(m.group(1)), question=m.group(2).strip(), section=section)
@@ -124,7 +136,11 @@ def parse_quiz_lines(lines: list[tuple[int, str, bool, float]]) -> list[QuizEntr
                 continue
         # Anything else is a heading ("True or False") for the questions that follow, or a page
         # header/footer. The current question stays open: its next choice letter still continues it.
-        section = text.rstrip(":")
+        # Right under a heading, an instruction sentence ("Choose A if the statement is True, otherwise B
+        # if False.") doesn't replace it ("Part III: True or False"); otherwise the last line wins.
+        if not (after_heading and _INSTRUCTION.match(text)):
+            section = text.rstrip(":")
+        last_was_heading = True
         in_question = False
 
     # A number may restart (Test I 1-20, Test II 1-10); the same question seen twice (a printed answer

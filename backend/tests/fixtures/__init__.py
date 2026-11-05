@@ -132,8 +132,9 @@ QUIZ = [
 ]
 
 
-def build_quiz_pdf(path: Path, rows=QUIZ) -> Path:
-    """An answer-key quiz: numbered questions, indented choices, the answers in bold."""
+def build_quiz_pdf(path: Path, rows=QUIZ, marker: str | None = None) -> Path:
+    """An answer-key quiz: numbered questions, indented choices, the answers in bold.
+    With `marker`, every choice starts with that list marker in the regular font ("• a. …")."""
     from app.services.export import FONT_DIR
 
     pdf = FPDF()
@@ -142,8 +143,11 @@ def build_quiz_pdf(path: Path, rows=QUIZ) -> Path:
     pdf.add_page()
     for kind, text in rows:
         x = {"h": 10, "q": 16}.get(kind, 24)
-        pdf.set_font("Noto", "B" if kind.endswith("b") else "", 11)
         pdf.set_x(x)
+        if marker and kind.startswith(("c", "a")):
+            pdf.set_font("Noto", "", 11)
+            pdf.cell(6, 6, marker)
+        pdf.set_font("Noto", "B" if kind.endswith("b") else "", 11)
         pdf.multi_cell(120, 6, text, new_x="LMARGIN", new_y="NEXT")
     path.parent.mkdir(parents=True, exist_ok=True)
     pdf.output(str(path))
