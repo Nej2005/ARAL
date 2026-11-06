@@ -1,5 +1,6 @@
 import hmac
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from alembic import command
@@ -58,6 +59,15 @@ async def passcode_guard(request: Request, call_next):
             code = "PASSCODE_WRONG" if supplied else "PASSCODE_REQUIRED"
             return JSONResponse(status_code=401, content={"error": {"code": code, "message": "Passcode needed."}})
     return await call_next(request)
+
+
+@app.middleware("http")
+async def server_timing(request: Request, call_next):
+    """`Server-Timing: app;dur=<ms>` on every response: the time spent in the app, apart from the network."""
+    start = time.perf_counter()
+    response = await call_next(request)
+    response.headers["Server-Timing"] = f"app;dur={(time.perf_counter() - start) * 1000:.0f}"
+    return response
 
 
 # Added after the guard so CORS is the outer layer: 401s from the guard still get CORS headers.

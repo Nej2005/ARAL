@@ -196,6 +196,8 @@ export interface AttemptMap {
   last_viewed_index: number;
   progress: Progress;
   cards: { index: number; question_id: string; status: "unanswered" | "correct" | "wrong" }[];
+  /** Every card, when asked for with `?cards=true` (the flashcards screen loads them all at once). */
+  card_list?: Card[];
 }
 
 export interface AnswerResult {

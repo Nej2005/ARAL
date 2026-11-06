@@ -194,7 +194,9 @@ A centered title, **MAKING 10 QUESTIONS**, with a filling `■■■■····�
 - **Bottom bar:** **← Back** (answered cards are read-only) · **Skip ⏭** before answering, **Next →** after, **Results →** when everything is done.
 - **Finish** with open cards → sheet: "3 open cards will count as wrong." **Answer them** / **Finish**.
 - **Keyboard (laptop):** `A–D` / `1–4` choose · `T` / `F` · `Enter` next · `←` back · `→` skip/next · `Esc` close sheet. There are no hint labels on screen; the letter boxes on the choices are the hint.
-- API: `GET /attempts/{id}`, `GET /attempts/{id}/cards/{index}`, `POST /attempts/{id}/answer`, `POST /attempts/{id}/finish`.
+- API: `GET /attempts/{id}?cards=true` (the map plus every card, in one request: each card goes into the card cache, so Back / Next / Skip / the map open cards instantly), `GET /attempts/{id}/cards/{index}` (only for a card the map's request did not bring; the next card is prefetched), `POST /attempts/{id}/answer`, `POST /attempts/{id}/finish`.
+- **No dead taps:** the chosen answer is marked at once (solid letter box, outlined row) while the server grades it.
+- **Answer lands on its card:** the answer carries its card number, so moving on while it is graded cannot put its feedback on the next card. A map reload still on its way when you answer is dropped and asked for again after. Skip / Next on the last card and Finish's "Answer them" go to the next open card read from the live map. Cards stay cached for the whole session.
 
 ### 6.6 Results — `/attempts/:id/summary`
 ```

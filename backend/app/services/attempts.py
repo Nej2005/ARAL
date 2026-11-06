@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import random
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
 
 from app.errors import AppError
 from app.models import Answer, Attempt, Document, Exam, Question, SourceItem, utcnow
-from app.services.coverage import active_items, used_item_ids
+from app.services.coverage import active_items, doc_item_counts
 from app.services.fidelity import clean_for_display
 from app.services.generation import source_ref
 from app.services.grading import grade, term_matches
@@ -84,6 +85,18 @@ def next_unanswered_index(attempt: Attempt, after_index: int) -> int | None:
     return None
 
 
+def preload_questions(db: Session, attempt: Attempt) -> dict[str, Question]:
+    """Every question of the attempt (and its source item) in two queries. While the caller keeps the returned dict,
+    `db.get` for them is answered from the session (it only holds weak references: an object nobody keeps is loaded
+    again)."""
+    if not attempt.question_order:
+        return {}
+    rows = db.scalars(
+        select(Question).where(Question.id.in_(attempt.question_order)).options(selectinload(Question.source_item))
+    )
+    return {q.id: q for q in rows}
+
+
 def question_at(db: Session, attempt: Attempt, index: int) -> Question:
     if index < 1 or index > attempt.total:
         raise AppError(404, "NOT_FOUND", f"Card {index} does not exist (1-{attempt.total}).")
@@ -111,7 +124,16 @@ def public_question(attempt: Attempt, q: Question) -> dict:
     return out
 
 
-def source_payload(db: Session, q: Question) -> dict:
+def _cached(cache: dict | None, key: tuple, load):
+    """`load()` once per request when the caller passes a cache (building many cards at once)."""
+    if cache is None:
+        return load()
+    if key not in cache:
+        cache[key] = load()
+    return cache[key]
+
+
+def source_payload(db: Session, q: Question, cache: dict | None = None) -> dict:
     exp = q.explanation or {}
     lesson = exp.get("lesson")
     if lesson:  # a quiz question backed by its lesson: the lesson's own words (one passage per line)
@@ -123,7 +145,8 @@ def source_payload(db: Session, q: Question) -> dict:
             "location": lesson.get("location"),
             "disagrees": bool(lesson.get("disagrees")),
         }
-    doc = db.get(Document, exp.get("document_id")) if exp.get("document_id") else None
+    doc_id = exp.get("document_id")
+    doc = _cached(cache, ("document", doc_id), lambda: db.get(Document, doc_id)) if doc_id else None
     page_no = exp.get("page_no")
     return {
         "quote": clean_for_display(exp.get("source_quote") or ""),
@@ -149,7 +172,7 @@ def your_answer_payload(q: Question, response: str | None) -> dict | None:
     return {"id": None, "text": response}
 
 
-def _why_yours_is_wrong(db: Session, q: Question, answer: Answer) -> str | None:
+def _why_yours_is_wrong(db: Session, q: Question, answer: Answer, cache: dict | None = None) -> str | None:
     if answer.is_correct:
         return None
     if q.type == "mcq":
@@ -165,7 +188,7 @@ def _why_yours_is_wrong(db: Session, q: Question, answer: Answer) -> str | None:
     reviewer = q.exam.reviewer
     docs = {d.id: d for d in reviewer.documents}
     own = q.source_item
-    for it in active_items(db, reviewer):
+    for it in _cached(cache, ("items", reviewer.id), lambda: active_items(db, reviewer)):
         if it.id == own.id or not it.term:
             continue
         names = [it.term, *(it.aliases or [])]
@@ -176,21 +199,21 @@ def _why_yours_is_wrong(db: Session, q: Question, answer: Answer) -> str | None:
     return None
 
 
-def feedback_payload(db: Session, q: Question, answer: Answer) -> dict:
+def feedback_payload(db: Session, q: Question, answer: Answer, cache: dict | None = None) -> dict:
     exp = q.explanation or {}
     return {
         "is_correct": answer.is_correct,
         "your_answer": your_answer_payload(q, answer.response),
         "correct_answer": correct_answer_payload(q),
         "why": q.rationale,
-        "why_yours_is_wrong": _why_yours_is_wrong(db, q, answer),
-        "source": source_payload(db, q),
+        "why_yours_is_wrong": _why_yours_is_wrong(db, q, answer, cache),
+        "source": source_payload(db, q, cache),
         "changed_span": exp.get("changed_span") if q.correct_answer == "false" else None,
         "match_note": answer.match_note,
     }
 
 
-def card_payload(db: Session, attempt: Attempt, index: int) -> dict:
+def card_payload(db: Session, attempt: Attempt, index: int, cache: dict | None = None) -> dict:
     q = question_at(db, attempt, index)
     ans = _answers_by_q(attempt).get(q.id)
     out = {
@@ -203,9 +226,17 @@ def card_payload(db: Session, attempt: Attempt, index: int) -> dict:
         "question": public_question(attempt, q),
     }
     if ans is not None or attempt.status == "completed":
-        out["feedback"] = feedback_payload(db, q, ans) if ans is not None else None
+        out["feedback"] = feedback_payload(db, q, ans, cache) if ans is not None else None
         out["correct_answer"] = correct_answer_payload(q)
     return out
+
+
+def deck_payload(db: Session, attempt: Attempt) -> dict:
+    """The map plus every card, so the app can move between cards without asking the server again.
+    A handful of queries whatever the size of the set (the questions are loaded in one)."""
+    cache: dict = {("questions",): preload_questions(db, attempt)}  # kept alive while the cards are built
+    return {**map_payload(attempt),
+            "card_list": [card_payload(db, attempt, i, cache) for i in range(1, attempt.total + 1)]}
 
 
 def map_payload(attempt: Attempt) -> dict:
@@ -279,6 +310,8 @@ def summary_payload(db: Session, attempt: Attempt) -> dict:
     if attempt.status != "completed":
         raise AppError(409, "ATTEMPT_NOT_FINISHED", "Finish the attempt first.")
     answers = _answers_by_q(attempt)
+    # one query for every question instead of one per card; the cache keeps them (and documents, items) alive
+    cache: dict = {("questions",): preload_questions(db, attempt)}
     wrong, skipped = [], []
     for qid in attempt.question_order:
         q = db.get(Question, qid)
@@ -292,14 +325,13 @@ def summary_payload(db: Session, attempt: Attempt) -> dict:
             "your_answer": your_answer_payload(q, a.response if a else None),
             "correct_answer": correct_answer_payload(q),
             "why": q.rationale,
-            "why_yours_is_wrong": _why_yours_is_wrong(db, q, a) if a else None,
-            "source": source_payload(db, q),
+            "why_yours_is_wrong": _why_yours_is_wrong(db, q, a, cache) if a else None,
+            "source": source_payload(db, q, cache),
             "changed_span": (q.explanation or {}).get("changed_span") if q.correct_answer == "false" else None,
         }
         (wrong if a is not None else skipped).append(card)
     reviewer = attempt.exam.reviewer
-    used = used_item_ids(db, reviewer)
-    unused = sum(1 for i in active_items(db, reviewer) if i.id not in used)
+    unused = sum(c["items"] - c["used"] for c in doc_item_counts(db, reviewer).values())
     total = attempt.total or 1
     return {
         "attempt_id": attempt.id,

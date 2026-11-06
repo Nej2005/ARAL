@@ -217,7 +217,7 @@ The unit of review. Every question is built from exactly one source item, and "r
 | source_attempt_id | FK, nullable | for `mistakes`: the attempt whose wrong/skipped cards it contains |
 | question_order | json list of question ids | shuffled per attempt; for `mistakes`, only the wrong + skipped questions |
 | choice_orders | json map `question_id → [choice ids]` | MCQ choices reshuffled per attempt |
-| last_viewed_index | int, default 1 | 1-based position in `question_order` of the last card opened; used to resume |
+| last_viewed_index | int, default 1 | 1-based position in `question_order` of the last card answered or opened on its own (`GET …/cards/{index}`; the app loads the whole deck at once, so mostly the last answered); a finished attempt opens there |
 | status | enum `in_progress` \| `completed` | becomes `completed` when every card is answered, or when the user presses Finish |
 | correct_count / total | int | `correct_count` is updated after every answer |
 | started_at / completed_at | timestamp | |
@@ -514,7 +514,7 @@ all cards answered ──► summary            Finish (with skipped cards) ─�
 
 1. `POST /exams/{id}/attempts` starts an attempt, shuffles the question order and MCQ choice order, and returns **card 1**.
 2. The user answers. `POST /attempts/{id}/answer` grades it **immediately**, saves it, and returns the **feedback** (§8.6) plus progress.
-3. The user moves with **Next**, **Back** or **Skip**. All three just open another card with `GET /attempts/{id}/cards/{index}`; there is no separate "skip" call.
+3. The user moves with **Next**, **Back** or **Skip**. All three just open another card; there is no separate "skip" call. The app loads every card once with `GET /attempts/{id}?cards=true`, so moving between cards needs no request; `GET /attempts/{id}/cards/{index}` serves a single card.
 4. The attempt **completes automatically** when the last unanswered card is answered (`"finished": true` in the feedback response).
 5. The user can also press **Finish** early → `POST /attempts/{id}/finish`. Any skipped cards are counted as not correct (§10.3).
 6. `GET /attempts/{id}/summary` returns the score and the after-finishing options.
@@ -612,6 +612,8 @@ All errors use this shape:
 
 When `APP_PASSCODE` is set, every route except `/health` needs the header `X-Passcode` (or `?passcode=` on download links); otherwise `401 PASSCODE_REQUIRED` / `PASSCODE_WRONG`.
 
+Every response carries `Server-Timing: app;dur=<ms>`, the time spent inside the app. Compared with the total time in the browser's network tab, it tells server work from network distance.
+
 ### Uploads (chunked)
 | Method & path | Body | Response |
 |---|---|---|
@@ -662,7 +664,7 @@ Validation: `types` must be non-empty and contain only known values, and `1 ≤ 
 | Method & path | Body | Response |
 |---|---|---|
 | `POST /exams/{id}/attempts` | — | `201 { attempt_id, attempt_no, kind: "full", total, card }` (card 1). This is also **Restart** |
-| `GET /attempts/{id}` | — | `200 { attempt_id, kind, status, total, last_viewed_index, progress, cards: [ { index, status: "unanswered" \| "correct" \| "wrong" } ] }` (question map, no content) |
+| `GET /attempts/{id}` | `?cards=true` (optional) | `200 { attempt_id, kind, status, total, last_viewed_index, progress, cards: [ { index, status: "unanswered" \| "correct" \| "wrong" } ] }` (question map, no content). With `cards=true` also `card_list`: every card, exactly as `GET …/cards/{index}` returns it (same answer-hiding rules), built with a fixed handful of queries |
 | `GET /attempts/{id}/cards/{index}` | — | `200 card` (1-based index; also updates `last_viewed_index`). Answered cards include `answered: true` + `feedback`. `404` if the index is out of range |
 | `POST /attempts/{id}/answer` | `{ "question_id": "...", "response": "c3" }` / `"true"` / `"Photosynthesis"` | `200 { feedback, progress, next_unanswered_index, finished }`; `409 ALREADY_ANSWERED`; `409 ATTEMPT_COMPLETED` |
 | `POST /attempts/{id}/finish` | — | `200 summary`. Marks the attempt completed, with skipped cards counted as not correct |

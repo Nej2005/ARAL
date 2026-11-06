@@ -5,6 +5,8 @@ from __future__ import annotations
 import csv
 import io
 
+import pytest
+
 from app.services import llm
 from tests.conftest import API, make_exam, next_set, process_document, upload
 from tests.fixtures import build_pdf, build_pptx
@@ -631,3 +633,68 @@ def test_quiz_answer_cites_its_lesson(client, tmp_path, fake_llm, session):
                       json={"question_id": q["id"], "response": q["choices"][0]["id"]}).json()["feedback"]["source"]
     assert src["filename"] == "mod4.pdf" and src["location"] == "p. 21" and src["disagrees"] is True
     assert src["quote"] == "A file or folder that is moved or copied ... all permissions are removed.\nSecond bullet."
+
+
+# --------------------------------------------------------------------------- speed
+
+
+def test_deck_returns_every_card_as_the_card_route_does(client, fixture_files):
+    r, *_ = _ready_reviewer(client, fixture_files)
+    e = make_exam(client, r["id"], {"types": ["mcq", "true_false", "identification"], "count": 6})
+    aid = client.post(f"{API}/exams/{e['id']}/attempts").json()["attempt_id"]
+    q = client.get(f"{API}/attempts/{aid}/cards/2").json()["question"]
+    client.post(f"{API}/attempts/{aid}/answer", json={"question_id": q["id"], "response": _wrong_answer(q)})
+
+    plain = client.get(f"{API}/attempts/{aid}").json()
+    assert "card_list" not in plain  # the map alone stays small
+    deck = client.get(f"{API}/attempts/{aid}?cards=true").json()
+    assert {k: v for k, v in deck.items() if k != "card_list"} == plain
+    assert deck["card_list"] == [client.get(f"{API}/attempts/{aid}/cards/{i}").json() for i in range(1, 7)]
+    assert deck["card_list"][1]["answered"] is True and deck["card_list"][1]["feedback"]
+    assert "feedback" not in deck["card_list"][0] and "correct_answer" not in deck["card_list"][0]
+
+
+@pytest.mark.parametrize("superseded", [False, True], ids=["active", "superseded"])
+def test_deck_and_summary_queries_do_not_grow_with_the_set(client, fixture_files, session, superseded):
+    """One query per card (an N+1) made the Results page slow on a 72-card set; the count must stay flat, also for
+    a set made before a Reprocess (its questions' source items are superseded, so not among the active ones)."""
+    from sqlalchemy import event
+
+    from app import db as dbmod
+    from app.models import SourceItem, utcnow
+
+    r, *_ = _ready_reviewer(client, fixture_files)
+    attempts = []
+    for n in (4, 12):
+        e = make_exam(client, r["id"], {"types": ["mcq", "true_false", "identification"], "count": n})
+        assert e["status"] == "ready", e
+        total = e["actual_count"]
+        aid = client.post(f"{API}/exams/{e['id']}/attempts").json()["attempt_id"]
+        for i in range(1, total + 1):  # every answer wrong: the most feedback to build
+            q = client.get(f"{API}/attempts/{aid}/cards/{i}").json()["question"]
+            client.post(f"{API}/attempts/{aid}/answer", json={"question_id": q["id"], "response": _wrong_answer(q)})
+        attempts.append((total, aid))
+    if superseded:
+        for item in session.query(SourceItem):
+            item.superseded_at = utcnow()
+        session.commit()
+
+    counts: dict[tuple[str, int], int] = {}
+    seen: list[int] = []
+
+    def tick(*_a):
+        seen.append(1)
+
+    event.listen(dbmod.engine, "before_cursor_execute", tick)
+    try:
+        for total, aid in attempts:
+            for name, path in (("deck", f"/attempts/{aid}?cards=true"), ("summary", f"/attempts/{aid}/summary")):
+                seen.clear()
+                assert client.get(API + path).status_code == 200
+                counts[(name, total)] = len(seen)
+    finally:
+        event.remove(dbmod.engine, "before_cursor_execute", tick)
+    (small, _), (big, _) = attempts
+    assert big >= small + 6, (small, big)
+    for name in ("deck", "summary"):
+        assert counts[(name, big)] <= counts[(name, small)] + 2, counts

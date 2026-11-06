@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./client";
 import type {
@@ -93,21 +93,39 @@ export function useExam(id: string | undefined, poll = false) {
   });
 }
 
-export function useAttemptMap(id: string | undefined) {
+/**
+ * The attempt's card map. With `withCards`, one request also brings every card and puts each one in the card
+ * cache, so moving between cards shows them at once instead of waiting on the server each time.
+ */
+export function useAttemptMap(id: string | undefined, withCards = false) {
+  const qc = useQueryClient();
   return useQuery({
     queryKey: keys.attempt(id ?? ""),
-    queryFn: () => api.get<AttemptMap>(`/attempts/${id}`),
+    queryFn: async () => {
+      const m = await api.get<AttemptMap>(`/attempts/${id}${withCards ? "?cards=true" : ""}`);
+      // Kept for the whole session: a card nobody has opened yet must not drop out after the default 5 minutes.
+      if (m.card_list) qc.setQueryDefaults(["attempt", id!, "card"], { gcTime: Infinity });
+      for (const c of m.card_list ?? []) {
+        // A card answered here meanwhile keeps its feedback (an older response must not undo it).
+        qc.setQueryData<Card>(keys.card(id!, c.index), (old) => (old?.answered && !c.answered ? old : c));
+      }
+      return { ...m, card_list: undefined };
+    },
     enabled: !!id,
   });
 }
 
-export function useCard(attemptId: string | undefined, index: number | null) {
-  return useQuery({
-    queryKey: keys.card(attemptId ?? "", index ?? 0),
+/** One card. Cards change only through this app (answering updates the cache; finishing invalidates it). */
+export function cardQuery(attemptId: string, index: number) {
+  return {
+    queryKey: keys.card(attemptId, index),
     queryFn: () => api.get<Card>(`/attempts/${attemptId}/cards/${index}`),
-    enabled: !!attemptId && !!index,
-    staleTime: 60_000,
-  });
+    staleTime: Infinity,
+  };
+}
+
+export function useCard(attemptId: string | undefined, index: number | null) {
+  return useQuery({ ...cardQuery(attemptId ?? "", index ?? 0), enabled: !!attemptId && !!index });
 }
 
 export function useSummary(id: string | undefined) {

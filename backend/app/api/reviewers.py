@@ -6,12 +6,13 @@ import re
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
 
 from app.api import get_document, get_reviewer
 from app.db import get_db
 from app.errors import AppError
-from app.models import Document, DocumentPage, Exam, Question, Reviewer, ReviewerDocument, SourceItem
+from app.models import Attempt, Document, DocumentPage, Exam, Question, Reviewer, ReviewerDocument, SourceItem
 from app.schemas import AddDocument, AvailabilityRequest, CreateReviewer, ExportRequest, PatchReviewer
 from app.services.attempts import exam_scores
 from app.services.coverage import active_items, doc_item_counts, used_item_ids
@@ -38,12 +39,15 @@ def reviewer_status(reviewer: Reviewer) -> str:
     return "ready"
 
 
-def reviewer_summary(db: Session, r: Reviewer) -> dict:
-    counts = doc_item_counts(db, r)
+def reviewer_summary(db: Session, r: Reviewer, counts: dict | None = None) -> dict:
+    counts = doc_item_counts(db, r) if counts is None else counts
     items = sum(c["items"] for c in counts.values())
     used = sum(c["used"] for c in counts.values())
-    completed = [a for e in r.exams for a in e.attempts if a.status == "completed" and a.kind == "full"]
-    latest = max(completed, key=lambda a: a.completed_at, default=None)
+    latest = db.scalars(  # the latest finished full attempt, in one query
+        select(Attempt).join(Exam, Exam.id == Attempt.exam_id)
+        .where(Exam.reviewer_id == r.id, Attempt.status == "completed", Attempt.kind == "full", Attempt.completed_at.is_not(None))
+        .order_by(Attempt.completed_at.desc()).limit(1)
+    ).first()
     return {
         "id": r.id,
         "title": r.title,
@@ -60,8 +64,8 @@ def reviewer_summary(db: Session, r: Reviewer) -> dict:
 
 
 def reviewer_detail(db: Session, r: Reviewer) -> dict:
-    out = reviewer_summary(db, r)
     counts = doc_item_counts(db, r)
+    out = reviewer_summary(db, r, counts)
     from app import jobs
     from app.services.knowledge import window_count
 
@@ -284,5 +288,8 @@ def list_exams(reviewer_id: str, db: Session = Depends(get_db)):
     from app.api.exams import exam_payload
 
     r = get_reviewer(db, reviewer_id)
-    exams = sorted(r.exams, key=lambda e: e.created_at, reverse=True)
+    exams = db.scalars(  # every set with its attempts: two queries, not one per set
+        select(Exam).where(Exam.reviewer_id == r.id).options(selectinload(Exam.attempts))
+        .order_by(Exam.created_at.desc())
+    ).all()
     return [{**exam_payload(e), **exam_scores(e)} for e in exams]

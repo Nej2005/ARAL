@@ -40,8 +40,10 @@ def start_attempt(exam_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/attempts/{attempt_id}")
-def get_map(attempt_id: str, db: Session = Depends(get_db)):
-    return svc.map_payload(get_attempt(db, attempt_id))
+def get_map(attempt_id: str, cards: bool = False, db: Session = Depends(get_db)):
+    """The card map; with `cards=true` also every card (`card_list`), so flipping cards needs no more requests."""
+    attempt = get_attempt(db, attempt_id)
+    return svc.deck_payload(db, attempt) if cards else svc.map_payload(attempt)
 
 
 @router.get("/attempts/{attempt_id}/cards/{index}")

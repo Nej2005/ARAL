@@ -171,6 +171,9 @@ details.more[open] summary svg{transform:rotate(90deg)}
 .choice.is-correct{background:var(--accent);color:var(--on-accent)}
 .choice.is-wrong{background:var(--hatch);color:var(--fg)}
 .choice.is-dim{opacity:.45}
+/* picked, waiting for the server's verdict: the letter turns solid so the tap registers at once */
+.choice.is-picked{box-shadow:inset 0 0 0 2px var(--fg)}
+.choice.is-picked .key{background:var(--fg);color:var(--bg);border-color:var(--fg)}
 .choice .mark{display:grid;place-items:center}
 .tf{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .tfb{display:grid;place-items:center;min-height:96px;border:1px solid var(--accent);background:transparent;cursor:pointer;color:var(--fg);font-family:var(--display);font-size:40px;letter-spacing:.08em;text-transform:uppercase}
@@ -179,6 +182,7 @@ details.more[open] summary svg{transform:rotate(90deg)}
 .tfb.is-correct{background:var(--accent);color:var(--on-accent)}
 .tfb.is-wrong{background:var(--hatch)}
 .tfb.is-dim{opacity:.4}
+.tfb.is-picked{box-shadow:inset 0 0 0 3px var(--fg)}
 .ident{display:flex;gap:8px;flex-wrap:wrap}
 .pinput{flex:1 1 220px;display:flex;align-items:center;gap:10px;border:1px dashed var(--accent);padding:0 14px;min-height:54px}
 .pinput::before{content:">";font-weight:600}

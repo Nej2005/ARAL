@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { api } from "../api/client";
-import { keys, useAttemptMap, useCard } from "../api/hooks";
+import { cardQuery, keys, useAttemptMap, useCard } from "../api/hooks";
 import type { AnswerRef, AnswerResult, AttemptMap, Card, Summary } from "../api/types";
 import { ThemeButton } from "../components/Header";
 import FeedbackBlock from "../components/FeedbackBlock";
@@ -20,13 +20,23 @@ import MapSheet from "../sheets/MapSheet";
 const LETTERS = "ABCDEFGH";
 const isRight = (a: AnswerRef, id: string) => (a.ids ?? [a.id]).includes(id);
 
+/** The next card not answered yet after `from`, wrapping around: read from the map, which every answer keeps current. */
+function nextOpen(m: AttemptMap, from: number): number | null {
+  const open = new Set(m.cards.filter((x) => x.status === "unanswered").map((x) => x.index));
+  for (let k = 1; k <= m.total; k++) {
+    const i = ((from - 1 + k) % m.total) + 1;
+    if (open.has(i)) return i;
+  }
+  return null;
+}
+
 export default function Flashcards() {
   const { id = "" } = useParams();
   const [params, setParams] = useSearchParams();
   const nav = useNavigate();
   const qc = useQueryClient();
   const toast = useToast();
-  const map = useAttemptMap(id);
+  const map = useAttemptMap(id, true); // brings every card in one request
   const [sheet, setSheet] = useState<"exit" | "map" | "finish" | null>(null);
   const [justAnswered, setJustAnswered] = useState(false);
   const identInput = useRef<HTMLInputElement>(null);
@@ -38,7 +48,13 @@ export default function Flashcards() {
     ? map.data.cards.find((x) => x.status === "unanswered")?.index ?? map.data.last_viewed_index
     : null;
   const index = indexParam >= 1 ? indexParam : firstOpen;
-  const card = useCard(id, index);
+  // Asked for on its own only once the map's request is over: it normally brought this card already
+  // (if it failed, the card in the URL still loads by itself).
+  const card = useCard(id, map.isPending ? null : index);
+  const indexRef = useRef(index);
+  useEffect(() => {
+    indexRef.current = index;
+  }, [index]);
 
   const goTo = useCallback(
     (i: number) => {
@@ -59,11 +75,17 @@ export default function Flashcards() {
   }, []);
 
   const answer = useMutation({
-    mutationFn: ({ questionId, response }: { questionId: string; response: string }) =>
+    mutationFn: ({ questionId, response }: { questionId: string; response: string; index: number }) =>
       api.post<AnswerResult>(`/attempts/${id}/answer`, { question_id: questionId, response }),
+    onMutate: async () => {
+      // A map request still on its way was built before this answer and would undo it: drop it, ask again after.
+      const stale = qc.isFetching({ queryKey: keys.attempt(id), exact: true }) > 0;
+      if (stale) await qc.cancelQueries({ queryKey: keys.attempt(id), exact: true });
+      return { refetchMap: stale };
+    },
     onSuccess: (res, vars) => {
-      // Update the card in place so the feedback shows without a refetch.
-      qc.setQueryData<Card>(keys.card(id, index ?? 0), (old) =>
+      // Update the answered card in place (the one tapped, even if you moved on while it was graded).
+      qc.setQueryData<Card>(keys.card(id, vars.index), (old) =>
         old ? { ...old, answered: true, feedback: res.feedback, next_unanswered_index: res.next_unanswered_index, finished: res.finished } : old,
       );
       qc.setQueryData<AttemptMap>(keys.attempt(id), (old) =>
@@ -76,12 +98,15 @@ export default function Flashcards() {
             }
           : old,
       );
-      setJustAnswered(true);
+      if (indexRef.current === vars.index) setJustAnswered(true);
     },
-    onError: (e) => {
+    onError: (e, vars) => {
       toast(describeError(e));
-      qc.invalidateQueries({ queryKey: keys.card(id, index ?? 0) });
+      qc.invalidateQueries({ queryKey: keys.card(id, vars.index) });
       qc.invalidateQueries({ queryKey: keys.attempt(id) });
+    },
+    onSettled: (_res, _err, _vars, ctx) => {
+      if (ctx?.refetchMap) void qc.invalidateQueries({ queryKey: keys.attempt(id), exact: true });
     },
   });
 
@@ -100,6 +125,14 @@ export default function Flashcards() {
   const done = m?.status === "completed" || !!c?.finished;
   const total = m?.total ?? c?.total ?? 0;
 
+  // Fallback when a card was not part of the map's request: fetch the next one ahead (no-op when it is cached).
+  useEffect(() => {
+    if (m && index !== null && index < total) void qc.prefetchQuery(cardQuery(id, index + 1));
+  }, [id, index, m, qc, total]);
+
+  // The choice being graded right now: shown as picked at once, before the server answers.
+  const picked = answer.isPending && c && answer.variables?.questionId === c.question.id ? answer.variables.response : null;
+
   const next = useCallback(() => {
     if (!c || index === null) return;
     if (done) {
@@ -107,15 +140,21 @@ export default function Flashcards() {
       return;
     }
     if (index < total) goTo(index + 1);
-    else if (c.next_unanswered_index) goTo(c.next_unanswered_index);
-  }, [c, done, goTo, id, index, nav, total]);
+    else {
+      const n = m ? nextOpen(m, index) : c.next_unanswered_index;
+      if (n) goTo(n);
+    }
+  }, [c, done, goTo, id, index, m, nav, total]);
 
   const skip = useCallback(() => {
     if (!c || index === null) return;
     if (index < total) goTo(index + 1);
-    else if (c.next_unanswered_index && c.next_unanswered_index !== index) goTo(c.next_unanswered_index);
-    else toast("Last open card");
-  }, [c, goTo, index, toast, total]);
+    else {
+      const n = m ? nextOpen(m, index) : c.next_unanswered_index;
+      if (n && n !== index) goTo(n);
+      else toast("Last open card");
+    }
+  }, [c, goTo, index, m, toast, total]);
 
   const back = useCallback(() => {
     if (index !== null && index > 1) goTo(index - 1);
@@ -124,7 +163,7 @@ export default function Flashcards() {
   const pick = useCallback(
     (response: string) => {
       if (!c || answered || done || answer.isPending) return;
-      answer.mutate({ questionId: c.question.id, response });
+      answer.mutate({ questionId: c.question.id, response, index: c.index });
     },
     [answer, answered, c, done],
   );
@@ -201,7 +240,7 @@ export default function Flashcards() {
           <div className="fc-main">
             <article className="card" id="card" key={index ?? 0}>
               {(map.isError || card.isError) && <p className="err"><Icon name="warn" />{describeError(map.error ?? card.error)}</p>}
-              {!c && !card.isError && <p className="loading">loading…</p>}
+              {!c && !card.isError && !(map.isError && index === null) && <p className="loading">loading…</p>}
               {c && q && (
                 <>
                   <div className="card-head">
@@ -221,6 +260,8 @@ export default function Flashcards() {
                           else cls = "is-dim";
                         } else if (done && c.correct_answer) {
                           cls = isRight(c.correct_answer, ch.id) ? "is-correct" : "is-dim";
+                        } else if (picked === ch.id) {
+                          cls = "is-picked";
                         }
                         return (
                           <button key={ch.id} className={`choice ${cls}`} disabled={answered || done || answer.isPending} onClick={() => pick(ch.id)}>
@@ -242,6 +283,8 @@ export default function Flashcards() {
                           if (v === correct) cls = "is-correct";
                           else if (fb && v === fb.your_answer?.text) cls = "is-wrong";
                           else cls = "is-dim";
+                        } else if (picked === v) {
+                          cls = "is-picked";
                         }
                         return (
                           <button key={v} className={`tfb ${cls}`} disabled={answered || done || answer.isPending} onClick={() => pick(v)}>
@@ -311,7 +354,7 @@ export default function Flashcards() {
         <FinishSheet
           unanswered={m.progress.unanswered}
           onClose={() => setSheet(null)}
-          onAnswer={() => { setSheet(null); if (c?.next_unanswered_index) goTo(c.next_unanswered_index); }}
+          onAnswer={() => { setSheet(null); const n = index !== null ? nextOpen(m, index) : null; if (n) goTo(n); }}
           onFinish={() => { setSheet(null); finish.mutate(); }}
         />
       )}
